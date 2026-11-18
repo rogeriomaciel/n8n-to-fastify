@@ -159,6 +159,12 @@ export class NodeMappers {
       .replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`)
       .replace(/\$now/g, 'DateTime.now()');
 
+    const inputBinding = /\$input\b/.test(rawCode) ? `      const $input = {
+        all: () => currentItems,
+        first: () => currentItems[0] ?? { json: {} },
+        get item() { return currentItems[0] ?? { json: {} }; },
+      };\n` : '';
+    const itemsBinding = /\bitems\b/.test(rawCode) ? '      const items = currentItems;\n' : '';
     const runCode = `
       const result = await (async () => {
         ${transformedCode}
@@ -177,7 +183,7 @@ export class NodeMappers {
     // [Node: ${ctx.node.name}] Code Execution
     ${ctx.variableName} = await (async () => {
       const currentItems = ${prevVar} || inputItems;
-${legacyBinding}${execution}
+${legacyBinding}${inputBinding}${itemsBinding}${execution}
     })();
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
