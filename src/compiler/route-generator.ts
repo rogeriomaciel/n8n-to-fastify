@@ -22,8 +22,8 @@ import { WorkflowContext } from '../runtime/workflow-context';
 
     workflows.forEach((wf) => {
       const functionName = `workflow_${CodeGenerator.sanitizeIdentifier(wf.fileName)}`;
-      const importPath = wf.relativePath.replace(/\.ts$/, '');
-      imports += `import { ${functionName} } from '../workflows/${importPath}';\n`;
+      const importPath = `../workflows/${wf.relativePath.replace(/\.ts$/, '')}`;
+      imports += `import { ${functionName} } from ${JSON.stringify(importPath)};\n`;
       importedFunctions.push(functionName);
     });
 
@@ -64,7 +64,7 @@ import { WorkflowContext } from '../runtime/workflow-context';
             routeDefinitions += `
   fastify.route({
     method: '${httpMethod}',
-    url: '${routePath}',
+    url: ${JSON.stringify(routePath)},
     handler: async (request: FastifyRequest, reply: FastifyReply) => {
       const startTime = performance.now();
       const ctx = new WorkflowContext();

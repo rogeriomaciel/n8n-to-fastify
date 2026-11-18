@@ -57,6 +57,38 @@ describe('ExpressionParser', () => {
 });
 
 describe('End-to-End Compilation & Subworkflow Execution', () => {
+  test('compiles and serves a webhook from a workflow filename containing an apostrophe', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'n2f-route-path-'));
+    const fastify = Fastify();
+
+    try {
+      const file = path.join(dir, "customer's-records.json");
+      const output = path.join(dir, 'service');
+      fs.writeFileSync(file, JSON.stringify({
+        name: 'Customer records',
+        nodes: [{
+          name: 'Webhook',
+          type: 'n8n-nodes-base.webhook',
+          typeVersion: 1,
+          parameters: { httpMethod: 'GET' },
+        }],
+        connections: {},
+      }));
+
+      const compile = Bun.spawnSync([process.execPath, 'bin/cli.ts', 'compile', file, '--out', output, '--strict']);
+      expect(compile.exitCode).toBe(0);
+      const { registerCompiledRoutes } = await import(path.join(output, 'routes', 'index.ts'));
+      await fastify.register(registerCompiledRoutes);
+      const result = await fastify.inject({ method: 'GET', url: "/webhook/customer's-records" });
+
+      expect(result.statusCode).toBe(200);
+      expect(result.json().__triggerPath).toBe("customer's-records");
+    } finally {
+      await fastify.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('compiles examples and serves HTTP requests with subworkflow resolution in < 5ms', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n2f-e2e-'));
 
