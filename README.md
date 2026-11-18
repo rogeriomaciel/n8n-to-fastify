@@ -217,6 +217,19 @@ With `Send Headers` enabled, `specifyHeaders: 'json'` accepts either a JSON stri
 
 ---
 
+## 📚 Architecture Guides & Deep Dives
+
+If you are evaluating or running `n8n-to-fastify` in production, these engineering notes document the design decisions behind the compiler:
+
+- **[Solving n8n Out-of-Memory (OOM) Crashes with Compiled Services](https://rogeriomaciel.com.br/en/solutions/n8n-out-of-memory-oom-solution/)** — Why visual execution trees exhaust RAM under webhook spikes and how compiled Fastify workers cut memory overhead.
+- **[Compiling n8n RabbitMQ Triggers & Publishers with Post-Success Ack](https://rogeriomaciel.com.br/en/solutions/compile-n8n-rabbitmq-ack-after-success/)** — Preserving at-least-once delivery semantics, deferred `ack`/`nack`, and exchange-mode routing.
+- **[Redacting Uncaught Webhook Errors & Opt-In Structured Tracing](https://rogeriomaciel.com.br/en/solutions/redact-webhook-errors-structured-tracing-fastify/)** — Keeping HTTP error responses safe at the edge while emitting JSON execution traces internally.
+- **[Preserving Binary Data, S3 Downloads & Multipart Uploads](https://rogeriomaciel.com.br/en/solutions/preserve-binary-data-s3-multipart-compiled-workflows/)** — Handling S3 file downloads, `Edit Fields` binary preservation, and multipart `FormData` without OOM bloat.
+- **[Strict Compatibility Checks & Per-Item IF/Switch Routing](https://rogeriomaciel.com.br/en/solutions/strict-workflow-compatibility-checks-deterministic-routing/)** — Failing fast at compile time with `--strict`, deterministic item branching, and bounded loops.
+- **[GitOps & CI/CD Versioning for n8n Workflows](https://rogeriomaciel.com.br/en/solutions/gitops-cicd-n8n-production/)** — Turning `.json` workflow exports into repeatable CI-compiled TypeScript services.
+
+---
+
 ## 👤 Author & Enterprise Migration Consulting
 
 Built by **[Rogério Maciel](https://rogeriomaciel.com.br/en/)** — Software Architect (20+ years in production systems, Ex-Head at Neoway, Ex-CTO).
