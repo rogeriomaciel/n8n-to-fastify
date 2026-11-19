@@ -148,15 +148,21 @@ export class NodeMappers {
       ? `      const $node = createLegacyNodeReferences(ctx, legacyNodeNames, ${JSON.stringify(ctx.legacyNodePorts)});\n`
       : '';
 
+    const nodeLookupBinding = /\$\s*\(/.test(rawCode) ? `      const $ = (name: string) => {
+        const target = ctx.getNode(name);
+        return {
+          first: () => target.first() ?? { json: {} },
+          item: target.item ?? { json: {} },
+          all: target.all,
+        };
+      };\n` : '';
+
     // Rewrite n8n sandbox globals to local runtime bindings
     const transformedCode = rawCode
       .replace(/\$input\.all\(\)/g, 'currentItems')
       .replace(/\$input\.first\(\)/g, '(currentItems[0] || { json: {} })')
       .replace(/\$input\.item/g, '(currentItems[0] || { json: {} })')
       .replace(/\$json/g, '(currentItems[0]?.json || {})')
-      .replace(/\$\(['"](.*?)['"]\)\.first\(\)/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.first() || { json: {} })`)
-      .replace(/\$\(['"](.*?)['"]\)\.item/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.item || { json: {} })`)
-      .replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`)
       .replace(/\$now/g, 'DateTime.now()');
 
     const runCode = `
@@ -177,7 +183,7 @@ export class NodeMappers {
     // [Node: ${ctx.node.name}] Code Execution
     ${ctx.variableName} = await (async () => {
       const currentItems = ${prevVar} || inputItems;
-${legacyBinding}${execution}
+${legacyBinding}${nodeLookupBinding}${execution}
     })();
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;

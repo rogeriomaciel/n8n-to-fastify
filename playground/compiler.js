@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -991,7 +991,16 @@
       const prevVar = ctx.previousVariableName || "inputItems";
       const legacyBinding = ctx.legacyNodePorts ? `      const $node = createLegacyNodeReferences(ctx, legacyNodeNames, ${JSON.stringify(ctx.legacyNodePorts)});
 ` : "";
-      const transformedCode = rawCode.replace(/\$input\.all\(\)/g, "currentItems").replace(/\$input\.first\(\)/g, "(currentItems[0] || { json: {} })").replace(/\$input\.item/g, "(currentItems[0] || { json: {} })").replace(/\$json/g, "(currentItems[0]?.json || {})").replace(/\$\(['"](.*?)['"]\)\.first\(\)/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.first() || { json: {} })`).replace(/\$\(['"](.*?)['"]\)\.item/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.item || { json: {} })`).replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`).replace(/\$now/g, "DateTime.now()");
+      const nodeLookupBinding = /\$\s*\(/.test(rawCode) ? `      const $ = (name: string) => {
+        const target = ctx.getNode(name);
+        return {
+          first: () => target.first() ?? { json: {} },
+          item: target.item ?? { json: {} },
+          all: target.all,
+        };
+      };
+` : "";
+      const transformedCode = rawCode.replace(/\$input\.all\(\)/g, "currentItems").replace(/\$input\.first\(\)/g, "(currentItems[0] || { json: {} })").replace(/\$input\.item/g, "(currentItems[0] || { json: {} })").replace(/\$json/g, "(currentItems[0]?.json || {})").replace(/\$now/g, "DateTime.now()");
       const runCode = `
       const result = await (async () => {
         ${transformedCode}
@@ -1006,7 +1015,7 @@
     // [Node: ${ctx.node.name}] Code Execution
     ${ctx.variableName} = await (async () => {
       const currentItems = ${prevVar} || inputItems;
-${legacyBinding}${execution}
+${legacyBinding}${nodeLookupBinding}${execution}
     })();
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
@@ -1473,8 +1482,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
