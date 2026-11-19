@@ -8,6 +8,7 @@ import { getRabbitMqPublisherIssue, rabbitMqPublisherType } from './mappers/rabb
 import { getS3DownloadIssue, s3NodeType } from './mappers/s3';
 import { compressionNodeType, getCompressionIssue } from './mappers/compression';
 import { convertToFileType, getConvertToFileIssue } from './mappers/convert-to-file';
+import { extractFromFileType, getExtractFromFileIssue } from './mappers/extract-from-file';
 import { getMultipartIssue, usesMultipartBody } from './mappers/http-request';
 import { getWaitIntervalIssue, waitNodeType } from './mappers/wait-interval';
 import { getStopAndErrorIssue, stopAndErrorType } from './mappers/stop-and-error';
@@ -16,6 +17,7 @@ import { parseRabbitMqTrigger, rabbitMqTriggerType } from './rabbitmq-trigger';
 const supportedNodeTypes = new Set([
   compressionNodeType,
   convertToFileType,
+  extractFromFileType,
   rabbitMqPublisherType,
   rabbitMqTriggerType,
   s3NodeType,
@@ -101,6 +103,10 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     }
     if (node.type === convertToFileType) {
       const issue = getConvertToFileIssue(node);
+      if (issue) report(node.name, issue);
+    }
+    if (node.type === extractFromFileType) {
+      const issue = getExtractFromFileIssue(node);
       if (issue) report(node.name, issue);
     }
     if (node.type === s3NodeType) {

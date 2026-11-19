@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -759,6 +759,36 @@
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
   }
 
+  // src/compiler/mappers/extract-from-file.ts
+  var extractFromFileType = "n8n-nodes-base.extractFromFile";
+  function getExtractFromFileIssue(node) {
+    const version = node.typeVersion ?? 1;
+    if (version !== 1 && version !== 1.1 || node.parameters?.operation !== "binaryToPropery") {
+      return "Extract From File supports Move File to Base64 String on node versions 1 and 1.1";
+    }
+  }
+  function mapExtractFromFile(ctx) {
+    const issue = getExtractFromFileIssue(ctx.node);
+    if (issue)
+      throw new Error(`Node ${JSON.stringify(ctx.node.name)}: ${issue}`);
+    const params = ctx.node.parameters ?? {};
+    const parse = (value) => ExpressionParser.parse(value, "source[0]", "source");
+    const binaryProperty = parse(params.binaryPropertyName ?? "data");
+    const destination = parse(params.destinationKey ?? "data");
+    const keepSource = parse(params.options?.keepSource ?? "");
+    return `
+    {
+      const source: N8nItem[] = ${ctx.previousVariableName ?? "inputItems"} || inputItems;
+      ${ctx.variableName} = extractBase64Items(source, item => ({
+        keepSource: ${keepSource},
+        binaryProperty: String(${binaryProperty} ?? ''),
+        get destination() { return String(${destination} ?? ''); },
+      }));
+      item = ${ctx.variableName}[0] || { json: {} };
+      ctx.setNodeOutputs(${JSON.stringify(ctx.node.name)}, [[0, ${ctx.variableName}]], ${ctx.variableName});
+    }`;
+  }
+
   // src/runtime/wait-interval.ts
   var unitMilliseconds = {
     seconds: 1000,
@@ -903,6 +933,9 @@
       }
       if (type === convertToFileType) {
         return mapConvertToFile(ctx);
+      }
+      if (type === extractFromFileType) {
+        return mapExtractFromFile(ctx);
       }
       if (type === compressionNodeType) {
         return mapCompression(ctx);
@@ -1473,8 +1506,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1519,6 +1552,8 @@ ${legacyBinding}${execution}
 ` : "";
       const jsonFileImport = wf.nodes.some((node) => node.type === convertToFileType) ? `import { convertItemsToJsonFile } from '${runtimePrefix}/convert-to-json';
 ` : "";
+      const extractFileImport = wf.nodes.some((node) => node.type === extractFromFileType) ? `import { extractBase64Items } from '${runtimePrefix}/extract-from-file';
+` : "";
       const httpRequestImport = wf.nodes.some((node) => node.type.includes("httpRequest") && (usesMultipartBody(node.parameters) || usesJsonHeaders(node.parameters))) ? `import { createRequestForm, parseRequestHeaders } from '${runtimePrefix}/http-request';
 ` : "";
       const waitImport = wf.nodes.some((node) => node.type === waitNodeType) ? `import { waitForInterval } from '${runtimePrefix}/wait-interval';
@@ -1529,7 +1564,7 @@ ${legacyBinding}${execution}
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
-${legacyNames}
+${extractFileImport}${legacyNames}
 const DateTime = {
   now: () => ({
     toString: () => new Date().toISOString(),

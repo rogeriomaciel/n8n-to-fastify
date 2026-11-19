@@ -8,6 +8,7 @@ import { mapRabbitMqPublisher, rabbitMqPublisherType } from './rabbitmq';
 import { mapS3Download, s3NodeType } from './s3';
 import { compressionNodeType, mapCompression } from './compression';
 import { convertToFileType, mapConvertToFile } from './convert-to-file';
+import { extractFromFileType, mapExtractFromFile } from './extract-from-file';
 import { mapWaitInterval, waitNodeType } from './wait-interval';
 import { mapStopAndError, stopAndErrorType } from './stop-and-error';
 import { generateMultipartBody, getMultipartIssue, usesJsonHeaders, usesMultipartBody } from './http-request';
@@ -38,6 +39,10 @@ export class NodeMappers {
 
     if (type === convertToFileType) {
       return mapConvertToFile(ctx);
+    }
+
+    if (type === extractFromFileType) {
+      return mapExtractFromFile(ctx);
     }
 
     if (type === compressionNodeType) {
