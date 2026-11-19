@@ -1,4 +1,5 @@
 import type { ParsedWorkflow } from './core-parser';
+import { selectCommunityAdapters, type CommunityAdapter } from './community-adapters';
 import { getDisabledNodeMode } from './disabled-node';
 import { getPositionMergeIssue, isPositionMerge } from './mappers/position-merge';
 import { getLegacyNodeReferenceIssue } from './mappers/code-context';
@@ -43,8 +44,10 @@ const supportedNodeTypes = new Set([
   ...['openAi', 'googleGemini', 'chainLlm'].map(type => `@n8n/n8n-nodes-langchain.${type}`),
 ]);
 
-export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
+export function getCompatibilityIssues(workflow: ParsedWorkflow, adapters: readonly CommunityAdapter[] = []): string[] {
   const issues: string[] = [];
+  const selections = selectCommunityAdapters(workflow, adapters);
+  const adapterTypes = new Set(adapters.map(adapter => adapter.type));
   const workflowLabel = JSON.stringify(workflow.name);
   const report = (nodeName: string, issue: string) => {
     issues.push(`Workflow ${workflowLabel}, node ${JSON.stringify(nodeName)}: ${issue}`);
@@ -65,9 +68,21 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
       if (!getDisabledNodeMode(node, workflow)) report(node.name, 'disabled node configuration is unsupported');
       continue;
     }
-    if (!supportedNodeTypes.has(node.type)) {
-      report(node.name, `unsupported node type ${JSON.stringify(node.type)}`);
+    const adapter = selections.get(node);
+    if (!supportedNodeTypes.has(node.type) && !adapter) {
+      if (!adapterTypes.has(node.type)) report(node.name, `unsupported node type ${JSON.stringify(node.type)}`);
+      else if (workflow.triggers.includes(node)) report(node.name, 'community node adapters support action nodes only');
+      else report(node.name, `no community adapter for ${JSON.stringify(node.type)} at typeVersion ${node.typeVersion}`);
       continue;
+    }
+    if (adapter && node.retryOnFail === true && !adapter.handlesRetries) {
+      report(node.name, 'the community adapter does not handle Retry On Fail');
+    }
+    const mainOutputs: unknown = workflow.connections[node.name]?.main;
+    if (adapter && Array.isArray(mainOutputs) && mainOutputs.slice(1).some((targets: unknown) =>
+      Array.isArray(targets) && targets.length > 0
+    )) {
+      report(node.name, 'community adapters support only main output 0');
     }
     if (node.continueOnFail) {
       report(node.name, 'legacy continueOnFail is ignored');

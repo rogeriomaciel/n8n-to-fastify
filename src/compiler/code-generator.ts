@@ -1,5 +1,6 @@
 import { N8nNode, ParsedWorkflow } from './parser';
 import { NodeMappers } from './mappers';
+import { mapCommunityNode, selectCommunityAdapters, type CommunityAdapter } from './community-adapters';
 import { emitPollingLoop } from './polling-code';
 import { getDisabledNodeMode } from './disabled-node';
 import { isPositionMerge } from './mappers/position-merge';
@@ -25,13 +26,20 @@ export class CodeGenerator {
   /**
    * Generates a standalone TypeScript module for a parsed n8n workflow.
    */
-  static generateWorkflowCode(wf: ParsedWorkflow): string {
+  static generateWorkflowCode(wf: ParsedWorkflow, adapters: readonly CommunityAdapter[] = []): string {
+    const communityNodes = selectCommunityAdapters(wf, adapters);
     const functionName = `workflow_${this.sanitizeIdentifier(wf.fileName)}`;
     const depth = (wf.relativePath.match(/\//g) || []).length;
     const runtimePrefix = '../'.repeat(depth + 1) + 'runtime';
     const positionMergeImport = wf.nodes.some(isPositionMerge)
       ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';\n`
       : '';
+    const communityImports = communityNodes.size > 0 ? [
+      `import { executeCommunityAdapter } from '${runtimePrefix}/community-adapter';`,
+      ...[...new Set(communityNodes.values())].map(adapter =>
+        `import ${adapter.binding} from ${JSON.stringify(`${runtimePrefix}/adapters/${adapter.fileName}`)};`),
+      '',
+    ].join('\n') : '';
     const legacyNodes = new Set(wf.nodes.filter(node =>
       usesLegacyNodeReferences(node) || usesRawLegacyNodeReferences(node)
     ));
@@ -69,7 +77,7 @@ export class CodeGenerator {
 
     const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
-import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
+${communityImports}import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
 ${legacyNames}
 const DateTime = {
@@ -98,18 +106,19 @@ const DateTime = {
     const terminalNames = new Set(loops.flatMap(loop => loop.terminalExits.map(exit => exit.target)));
     const mapNode = (node: N8nNode, previousVariableName: string) => {
       const varName = nodeVarMap.get(node.name)!;
-      return disabledModes.get(node) === 'passthrough'
-        ? `
+      if (disabledModes.get(node) === 'passthrough') return `
     ${varName} = ${previousVariableName} || [];
     item = ${varName}[0] || { json: {} };
-    ctx.setNodeOutput(${JSON.stringify(node.name)}, ${varName});`
-        : NodeMappers.mapNode({
-            node,
-            workflowName: wf.name,
-            variableName: varName,
-            previousVariableName,
-            legacyNodePorts: legacyNodes.has(node) ? collectLegacyNodePorts(node, nodesByName) : undefined,
-          });
+    ctx.setNodeOutput(${JSON.stringify(node.name)}, ${varName});`;
+      const adapter = communityNodes.get(node);
+      if (adapter) return mapCommunityNode(node, adapter, varName, previousVariableName);
+      return NodeMappers.mapNode({
+        node,
+        workflowName: wf.name,
+        variableName: varName,
+        previousVariableName,
+        legacyNodePorts: legacyNodes.has(node) ? collectLegacyNodePorts(node, nodesByName) : undefined,
+      });
     };
 
     triggers.forEach((node) => {
@@ -156,9 +165,11 @@ const DateTime = {
         branchCheckStr = `(${branchChecks.join(' || ')})`;
       }
 
-      const prevExpr = runPerIncomingBatch ? 'incomingItems' : 'inputItems';
+      // A registered adapter always receives its connected batch.
+      const usesConnectedBatches = runPerIncomingBatch || (incoming.length > 0 && communityNodes.has(node));
+      const prevExpr = usesConnectedBatches ? 'incomingItems' : 'inputItems';
       let nodeCode = mapNode(node, prevExpr);
-      if (runPerIncomingBatch) {
+      if (usesConnectedBatches) {
         const batches = incoming.map(
           conn => `ctx.getNodeOutputBatches(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`
         );

@@ -141,6 +141,31 @@ bun run start
 
 The compiler merges these entries into the generated `package.json`. Declare every third-party package the workflow may load, including packages resolved dynamically via `require()` or `import()`.
 
+## Community Node Adapters
+
+Register a local adapter for an action node by its exact exported `type` and `typeVersion`. Pass the manifest to `bun run compile ./workflows --adapters ./adapters.json --strict`.
+
+```json
+{
+  "schemaVersion": 1,
+  "adapters": [{
+    "type": "n8n-nodes-example.echo",
+    "typeVersion": 1,
+    "module": "./echo.mjs",
+    "parameters": ["message"]
+  }]
+}
+```
+
+```js
+export default ({ items, parameters }) => items.map((_, index) => ({
+  json: { message: parameters(index).message },
+  pairedItem: { item: index },
+}));
+```
+
+Use a trusted, self-contained `.mjs` or `.ts` module. The compiler copies selected modules into the generated service and merges their optional `dependencies` into its package manifest. Each adapter receives the input batch, basic `node` metadata, and a `parameters(index = 0)` function that evaluates the listed top-level parameters using the workflow context. Adapters return an array of n8n items for main output 0, synchronously or asynchronously. Read credentials from the runtime environment. Set `handlesRetries` to `true` when the module implements retry behavior using `node.retryOnFail`, `node.maxTries`, and `node.waitBetweenTries`.
+
 ---
 
 ## 🧪 Tests & Reproducible Benchmark
