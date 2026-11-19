@@ -309,7 +309,8 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const useCanvasOrder = json.settings?.executionOrder === "v1";
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections, useCanvasOrder).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -319,10 +320,11 @@
         connections,
         orderedNodes,
         triggers,
+        useCanvasOrder,
         pollingLoops
       };
     }
-    static topologicalSort(nodes, connections) {
+    static topologicalSort(nodes, connections, useCanvasOrder) {
       const nodeMap = new Map;
       const adjList = new Map;
       nodes.forEach((node) => {
@@ -355,6 +357,13 @@
         visiting.add(nodeName);
         pathStack.push(nodeName);
         const neighbors = adjList.get(nodeName) || [];
+        if (useCanvasOrder) {
+          neighbors.sort((a, b) => {
+            const [ax, ay] = nodeMap.get(a)?.position ?? [0, 0];
+            const [bx, by] = nodeMap.get(b)?.position ?? [0, 0];
+            return by - ay || bx - ax;
+          });
+        }
         for (const neighbor of neighbors) {
           dfs(neighbor, pathStack);
         }
@@ -1473,8 +1482,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1539,8 +1548,18 @@ const DateTime = {
 `;
       let declCode = `  let item: N8nItem = inputItems[0] || { json: {} };
 `;
+      if (wf.useCanvasOrder)
+        declCode += `  let workflowItems = inputItems;
+`;
       let bodyCode = `  ctx.setNodeOutput("__initial__", inputItems);
 `;
+      const emitNodeBlock = (node, condition, code, indent) => {
+        if (wf.useCanvasOrder && (node.type !== stopAndErrorType || node.disabled)) {
+          code += `
+workflowItems = ctx.getNode(${JSON.stringify(node.name)}).all();`;
+        }
+        return this.generateNodeBlock(wf.id, node, condition, code, indent);
+      };
       const nodeVarMap = new Map;
       wf.orderedNodes.forEach((node, index) => {
         const varName = `node_${index}_${this.sanitizeIdentifier(node.name)}`;
@@ -1583,7 +1602,7 @@ const DateTime = {
         }
         const nodeCode = `${varName} = inputItems;
 ctx.setNodeOutput(${nodeName}, inputItems);`;
-        bodyCode += this.generateNodeBlock(wf.id, node, condition, nodeCode);
+        bodyCode += emitNodeBlock(node, condition, nodeCode);
       });
       nonTriggers.forEach((node) => {
         const varName = nodeVarMap.get(node.name);
@@ -1592,7 +1611,7 @@ ctx.setNodeOutput(${nodeName}, inputItems);`;
         const loop = loopsByMember.get(node.name);
         if (loop) {
           if (node.name === loop.entry) {
-            bodyCode += emitPollingLoop(loop, nodesByName, mapNode, (member, condition, code) => this.generateNodeBlock(wf.id, member, condition, code));
+            bodyCode += emitPollingLoop(loop, nodesByName, mapNode, emitNodeBlock);
           }
           return;
         }
@@ -1620,10 +1639,10 @@ ${nodeCode.trim()}
         } else if (hasRabbitMqTrigger) {
           branchCheckStr = `entryNode === undefined && ${branchCheckStr}`;
         }
-        bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode, ancestorTriggers.length > 0 ? "      " : "    ");
+        bodyCode += emitNodeBlock(node, branchCheckStr, nodeCode, ancestorTriggers.length > 0 ? "      " : "    ");
       });
       const lastNodeName = wf.orderedNodes.filter((node) => disabledModes.get(node) !== "skip" && (node.type !== stopAndErrorType || node.disabled)).at(-1)?.name;
-      const returnItemsExpr = lastNodeName ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])` : `inputItems`;
+      const returnItemsExpr = wf.useCanvasOrder ? "workflowItems" : lastNodeName ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])` : `inputItems`;
       const keys = Array.from(new Set([wf.id, wf.name, wf.fileName])).filter(Boolean);
       return `${imports}
 export async function ${functionName}(

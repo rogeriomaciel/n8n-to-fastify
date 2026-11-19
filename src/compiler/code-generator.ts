@@ -81,7 +81,16 @@ const DateTime = {
 `;
 
     let declCode = '  let item: N8nItem = inputItems[0] || { json: {} };\n';
+    if (wf.useCanvasOrder) declCode += '  let workflowItems = inputItems;\n';
     let bodyCode = '  ctx.setNodeOutput("__initial__", inputItems);\n';
+
+    const emitNodeBlock = (node: N8nNode, condition: string, code: string, indent?: string) => {
+      // Record the result in this invocation, even when the execution context is shared.
+      if (wf.useCanvasOrder && (node.type !== stopAndErrorType || node.disabled)) {
+        code += `\nworkflowItems = ctx.getNode(${JSON.stringify(node.name)}).all();`;
+      }
+      return this.generateNodeBlock(wf.id, node, condition, code, indent);
+    };
 
     const nodeVarMap = new Map<string, string>();
     wf.orderedNodes.forEach((node, index) => {
@@ -126,7 +135,7 @@ const DateTime = {
         condition = `entryNode === undefined && (!triggerNode_${index} || triggerNode_${index} === ${nodeName} || triggerPath_${index} === ${JSON.stringify(rawNodePath)})`;
       }
       const nodeCode = `${varName} = inputItems;\nctx.setNodeOutput(${nodeName}, inputItems);`;
-      bodyCode += this.generateNodeBlock(wf.id, node, condition, nodeCode);
+      bodyCode += emitNodeBlock(node, condition, nodeCode);
     });
 
     nonTriggers.forEach((node) => {
@@ -136,9 +145,7 @@ const DateTime = {
       const loop = loopsByMember.get(node.name);
       if (loop) {
         if (node.name === loop.entry) {
-          bodyCode += emitPollingLoop(loop, nodesByName, mapNode, (member, condition, code) =>
-            this.generateNodeBlock(wf.id, member, condition, code)
-          );
+          bodyCode += emitPollingLoop(loop, nodesByName, mapNode, emitNodeBlock);
         }
         return;
       }
@@ -177,14 +184,14 @@ ${nodeCode.trim()}
       } else if (hasRabbitMqTrigger) {
         branchCheckStr = `entryNode === undefined && ${branchCheckStr}`;
       }
-      bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode,
+      bodyCode += emitNodeBlock(node, branchCheckStr, nodeCode,
         ancestorTriggers.length > 0 ? '      ' : '    ');
     });
 
     const lastNodeName = wf.orderedNodes
       .filter(node => disabledModes.get(node) !== 'skip' && (node.type !== stopAndErrorType || node.disabled))
       .at(-1)?.name;
-    const returnItemsExpr = lastNodeName
+    const returnItemsExpr = wf.useCanvasOrder ? 'workflowItems' : lastNodeName
       ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])`
       : `inputItems`;
 
