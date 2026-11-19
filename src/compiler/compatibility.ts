@@ -1,7 +1,7 @@
 import type { ParsedWorkflow } from './core-parser';
 import { getDisabledNodeMode } from './disabled-node';
 import { getPositionMergeIssue, isPositionMerge } from './mappers/position-merge';
-import { getLegacyNodeReferenceIssue } from './mappers/code-context';
+import { getCodeItemMatchingIssue, getLegacyNodeReferenceIssue, usesCodeItemMatching } from './mappers/code-context';
 import { continuesCodeOnRegularOutput } from './mappers/code-errors';
 import { getRawEditFieldsIssue } from './mappers/raw-edit-fields';
 import { getRabbitMqPublisherIssue, rabbitMqPublisherType } from './mappers/rabbitmq';
@@ -87,6 +87,11 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     const params = node.parameters ?? {};
     const codeIssue = getLegacyNodeReferenceIssue(node);
     if (codeIssue) report(node.name, codeIssue);
+    const itemMatchingIssue = getCodeItemMatchingIssue(node);
+    if (itemMatchingIssue) report(node.name, itemMatchingIssue);
+    else if (usesCodeItemMatching(node) && workflow.pollingLoops?.some(loop => loop.nodes.includes(node.name))) {
+      report(node.name, 'Code itemMatching is unsupported inside a polling loop');
+    }
     if (node.type === waitNodeType) {
       const issue = getWaitIntervalIssue(node);
       if (issue) report(node.name, issue);

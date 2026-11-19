@@ -1,4 +1,5 @@
 import { N8nItem } from './n8n-helper';
+import { ItemMatching } from './item-matching';
 import { WorkflowTrace } from './workflow-trace';
 import type { NodeTraceSink } from './workflow-trace';
 
@@ -23,6 +24,7 @@ export class WorkflowContext {
   private nodeOutputs = new Map<string, N8nItem[]>();
   private outputPorts = new Map<string, Map<number, N8nItem[]>>();
   private outputBatches = new Map<string, Map<number, N8nItem[][]>>();
+  private itemMatching?: ItemMatching;
   private activeBranches = new Map<string, Set<number>>();
   private executedNodes = new Set<string>();
   private readonly trace?: WorkflowTrace;
@@ -80,13 +82,31 @@ export class WorkflowContext {
     return items === undefined ? [] : [items];
   }
 
+  public getItemMatchingBatches(nodeName: string, outputIndex: number): N8nItem[][] {
+    const matching = this.itemMatching ??= new ItemMatching();
+    return this.getNodeOutputBatches(nodeName, outputIndex).map(batch => matching.select(nodeName, batch));
+  }
+
+  public getLinkedItem(nodeName: string, inputBatch: N8nItem[], index: number): N8nItem {
+    if (!this.itemMatching) throw new Error('Cannot resolve a unique linked item');
+    return this.itemMatching.resolve(nodeName, inputBatch, index);
+  }
+
   public async runNodeBatches(
     nodeName: string,
     batches: N8nItem[][],
     run: (items: N8nItem[]) => Promise<void>,
   ): Promise<void> {
+    const runAndRecord = async (input: N8nItem[]) => {
+      await run(input);
+      if (!this.itemMatching) return;
+      for (const port of this.activeBranches.get(nodeName) ?? []) {
+        const output = this.getNodeOutput(nodeName, port);
+        if (output) this.itemMatching.record(nodeName, input, output);
+      }
+    };
     if (batches.length < 2) {
-      if (batches.length === 1) await run(batches[0]);
+      if (batches.length === 1) await runAndRecord(batches[0]);
       return;
     }
 
@@ -94,7 +114,7 @@ export class WorkflowContext {
     const all: N8nItem[][] = [];
     for (const input of batches) {
       this.clearNodeOutput(nodeName);
-      await run(input);
+      await runAndRecord(input);
 
       const items = this.nodeOutputs.get(nodeName);
       if (items?.length) all.push(items);

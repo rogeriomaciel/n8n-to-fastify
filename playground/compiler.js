@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -501,6 +501,15 @@
   }
 
   // src/compiler/mappers/code-context.ts
+  function usesCodeItemMatching(node) {
+    const code = node.parameters?.jsCode;
+    return node.type === "n8n-nodes-base.code" && typeof code === "string" && /\.\s*itemMatching\b/.test(code);
+  }
+  function getCodeItemMatchingIssue(node) {
+    if (usesCodeItemMatching(node) && ((node.parameters?.language ?? "javaScript") !== "javaScript" || (node.parameters?.mode ?? "runOnceForAllItems") !== "runOnceForAllItems")) {
+      return "Code itemMatching requires JavaScript and Run Once for All Items";
+    }
+  }
   function usesLegacyNodeReferences(node) {
     if (!node.type.includes("code") && !node.type.includes("function"))
       return false;
@@ -983,7 +992,7 @@
     }`;
     }
     static mapCodeNode(ctx) {
-      const issue = getLegacyNodeReferenceIssue(ctx.node);
+      const issue = getLegacyNodeReferenceIssue(ctx.node) ?? getCodeItemMatchingIssue(ctx.node);
       if (issue)
         throw new Error(`Node ${JSON.stringify(ctx.node.name)}: ${issue}`);
       const params = ctx.node.parameters || {};
@@ -991,7 +1000,12 @@
       const prevVar = ctx.previousVariableName || "inputItems";
       const legacyBinding = ctx.legacyNodePorts ? `      const $node = createLegacyNodeReferences(ctx, legacyNodeNames, ${JSON.stringify(ctx.legacyNodePorts)});
 ` : "";
-      const transformedCode = rawCode.replace(/\$input\.all\(\)/g, "currentItems").replace(/\$input\.first\(\)/g, "(currentItems[0] || { json: {} })").replace(/\$input\.item/g, "(currentItems[0] || { json: {} })").replace(/\$json/g, "(currentItems[0]?.json || {})").replace(/\$\(['"](.*?)['"]\)\.first\(\)/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.first() || { json: {} })`).replace(/\$\(['"](.*?)['"]\)\.item/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.item || { json: {} })`).replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`).replace(/\$now/g, "DateTime.now()");
+      const matchingBinding = usesCodeItemMatching(ctx.node) ? `      const $ = (name: string) => ({
+        ...ctx.getNode(name),
+        itemMatching: (index: number) => ctx.getLinkedItem(name, currentItems, index),
+      });
+` : "";
+      const transformedCode = rawCode.replace(/\$input\.all\(\)/g, "currentItems").replace(/\$input\.first\(\)/g, "(currentItems[0] || { json: {} })").replace(/\$input\.item/g, "(currentItems[0] || { json: {} })").replace(/\$json/g, "(currentItems[0]?.json || {})").replace(/\$\(['"](.*?)['"]\)\.first\(\)/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.first() || { json: {} })`).replace(/\$\((['"])((?:\\.|(?!\1)[^\\\r\n])*)\1\)\.item(?![\w$])/g, (_, _quote, n) => `(ctx.getNode(${JSON.stringify(n)})?.item || { json: {} })`).replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`).replace(/\$now/g, "DateTime.now()");
       const runCode = `
       const result = await (async () => {
         ${transformedCode}
@@ -1006,7 +1020,7 @@
     // [Node: ${ctx.node.name}] Code Execution
     ${ctx.variableName} = await (async () => {
       const currentItems = ${prevVar} || inputItems;
-${legacyBinding}${execution}
+${legacyBinding}${matchingBinding}${execution}
     })();
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
@@ -1312,11 +1326,14 @@ ${legacyBinding}${execution}
     {
       const source = ${prevVar} || inputItems;
       const expanded: N8nItem[] = [];
-      for (const entry of source) {
+      for (const [index, entry] of source.entries()) {
         const arr = entry.json?.[${JSON.stringify(fieldToSplit)}];
         if (Array.isArray(arr)) {
           for (const el of arr) {
-            expanded.push({ json: typeof el === 'object' && el !== null ? el : { [${JSON.stringify(fieldToSplit)}]: el } });
+            expanded.push({
+              pairedItem: { item: index },
+              json: typeof el === 'object' && el !== null ? el : { [${JSON.stringify(fieldToSplit)}]: el },
+            });
           }
         }
       }
@@ -1473,8 +1490,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1511,6 +1528,7 @@ ${legacyBinding}${execution}
       const legacyNames = legacyNodes.size > 0 ? `const legacyNodeNames = new Set<string>(${JSON.stringify(wf.nodes.map((node) => node.name))});
 ` : "";
       const nodesByName = new Map(wf.nodes.map((node) => [node.name, node]));
+      const batchLookup = wf.nodes.some((node) => !node.disabled && usesCodeItemMatching(node)) ? "getItemMatchingBatches" : "getNodeOutputBatches";
       const rabbitMqImport = wf.nodes.some((node) => node.type === rabbitMqPublisherType) ? `import { publishRabbitMq } from '${runtimePrefix}/rabbitmq';
 ` : "";
       const s3Import = wf.nodes.some((node) => node.type === s3NodeType) ? `import { downloadS3Files } from '${runtimePrefix}/s3';
@@ -1608,7 +1626,7 @@ ctx.setNodeOutput(${nodeName}, inputItems);`;
         const prevExpr = runPerIncomingBatch ? "incomingItems" : "inputItems";
         let nodeCode = mapNode(node, prevExpr);
         if (runPerIncomingBatch) {
-          const batches = incoming.map((conn) => `ctx.getNodeOutputBatches(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`);
+          const batches = incoming.map((conn) => `ctx.${batchLookup}(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`);
           nodeCode = `await ctx.runNodeBatches(${JSON.stringify(node.name)}, [${batches.join(", ")}].flat(), async (incomingItems) => {
 ${nodeCode.trim()}
 });`;

@@ -119,6 +119,7 @@ Place a `.env` file in the generated service directory and run `bun run start` f
 | **Stop and Error** | Stops an active workflow path with a message or structured error |
 
 > Legacy `$node["Node name"]` references in a `Code` node running once for all items read the first item from the connected output (`.json`, legacy `.data` alias, and `.binary` metadata).
+> JavaScript Code running once for all items can use `$('Node').itemMatching(index)` to follow a unique item through single-input batches. Missing and ambiguous links throw. Tracing through multi-input merges is outside this support.
 >
 > Compiled polling loops support a single-entry cycle with one timed `Wait` and one `IF` or `Switch` retry port; completed batches continue after the cycle and direct `Stop and Error` exits fail immediately. Set `N8N_TO_FASTIFY_POLL_MAX_ATTEMPTS` at runtime to override the default limit of `100` attempts per batch.
 

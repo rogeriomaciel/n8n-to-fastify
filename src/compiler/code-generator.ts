@@ -3,7 +3,7 @@ import { NodeMappers } from './mappers';
 import { emitPollingLoop } from './polling-code';
 import { getDisabledNodeMode } from './disabled-node';
 import { isPositionMerge } from './mappers/position-merge';
-import { collectLegacyNodePorts, usesLegacyNodeReferences } from './mappers/code-context';
+import { collectLegacyNodePorts, usesCodeItemMatching, usesLegacyNodeReferences } from './mappers/code-context';
 import { isRawEditFields, usesRawLegacyNodeReferences } from './mappers/raw-edit-fields';
 import { rabbitMqPublisherType } from './mappers/rabbitmq';
 import { s3NodeType } from './mappers/s3';
@@ -45,6 +45,8 @@ export class CodeGenerator {
       ? `const legacyNodeNames = new Set<string>(${JSON.stringify(wf.nodes.map(node => node.name))});\n`
       : '';
     const nodesByName = new Map(wf.nodes.map(node => [node.name, node]));
+    const batchLookup = wf.nodes.some(node => !node.disabled && usesCodeItemMatching(node))
+      ? 'getItemMatchingBatches' : 'getNodeOutputBatches';
     const rabbitMqImport = wf.nodes.some((node) => node.type === rabbitMqPublisherType)
       ? `import { publishRabbitMq } from '${runtimePrefix}/rabbitmq';\n`
       : '';
@@ -160,7 +162,7 @@ const DateTime = {
       let nodeCode = mapNode(node, prevExpr);
       if (runPerIncomingBatch) {
         const batches = incoming.map(
-          conn => `ctx.getNodeOutputBatches(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`
+          conn => `ctx.${batchLookup}(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`
         );
         // Keep the mapper body's original indentation, including multiline literals.
         nodeCode = `await ctx.runNodeBatches(${JSON.stringify(node.name)}, [${batches.join(', ')}].flat(), async (incomingItems) => {

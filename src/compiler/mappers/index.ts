@@ -1,7 +1,7 @@
 import { N8nNode } from '../parser';
 import { ExpressionParser } from '../expression-parser';
 import { isPositionMerge, mapPositionMerge } from './position-merge';
-import { getLegacyNodeReferenceIssue } from './code-context';
+import { getCodeItemMatchingIssue, getLegacyNodeReferenceIssue, usesCodeItemMatching } from './code-context';
 import { continuesCodeOnRegularOutput } from './code-errors';
 import { getRawEditFieldsIssue, isRawEditFields, mapRawEditFields } from './raw-edit-fields';
 import { mapRabbitMqPublisher, rabbitMqPublisherType } from './rabbitmq';
@@ -138,7 +138,7 @@ export class NodeMappers {
   }
 
   private static mapCodeNode(ctx: NodeMapperContext): string {
-    const issue = getLegacyNodeReferenceIssue(ctx.node);
+    const issue = getLegacyNodeReferenceIssue(ctx.node) ?? getCodeItemMatchingIssue(ctx.node);
     if (issue) throw new Error(`Node ${JSON.stringify(ctx.node.name)}: ${issue}`);
 
     const params = ctx.node.parameters || {};
@@ -147,6 +147,10 @@ export class NodeMappers {
     const legacyBinding = ctx.legacyNodePorts
       ? `      const $node = createLegacyNodeReferences(ctx, legacyNodeNames, ${JSON.stringify(ctx.legacyNodePorts)});\n`
       : '';
+    const matchingBinding = usesCodeItemMatching(ctx.node) ? `      const $ = (name: string) => ({
+        ...ctx.getNode(name),
+        itemMatching: (index: number) => ctx.getLinkedItem(name, currentItems, index),
+      });\n` : '';
 
     // Rewrite n8n sandbox globals to local runtime bindings
     const transformedCode = rawCode
@@ -155,7 +159,7 @@ export class NodeMappers {
       .replace(/\$input\.item/g, '(currentItems[0] || { json: {} })')
       .replace(/\$json/g, '(currentItems[0]?.json || {})')
       .replace(/\$\(['"](.*?)['"]\)\.first\(\)/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.first() || { json: {} })`)
-      .replace(/\$\(['"](.*?)['"]\)\.item/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.item || { json: {} })`)
+      .replace(/\$\((['"])((?:\\.|(?!\1)[^\\\r\n])*)\1\)\.item(?![\w$])/g, (_: string, _quote: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.item || { json: {} })`)
       .replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`)
       .replace(/\$now/g, 'DateTime.now()');
 
@@ -177,7 +181,7 @@ export class NodeMappers {
     // [Node: ${ctx.node.name}] Code Execution
     ${ctx.variableName} = await (async () => {
       const currentItems = ${prevVar} || inputItems;
-${legacyBinding}${execution}
+${legacyBinding}${matchingBinding}${execution}
     })();
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
@@ -522,11 +526,14 @@ ${legacyBinding}${execution}
     {
       const source = ${prevVar} || inputItems;
       const expanded: N8nItem[] = [];
-      for (const entry of source) {
+      for (const [index, entry] of source.entries()) {
         const arr = entry.json?.[${JSON.stringify(fieldToSplit)}];
         if (Array.isArray(arr)) {
           for (const el of arr) {
-            expanded.push({ json: typeof el === 'object' && el !== null ? el : { [${JSON.stringify(fieldToSplit)}]: el } });
+            expanded.push({
+              pairedItem: { item: index },
+              json: typeof el === 'object' && el !== null ? el : { [${JSON.stringify(fieldToSplit)}]: el },
+            });
           }
         }
       }
