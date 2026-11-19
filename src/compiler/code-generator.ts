@@ -67,10 +67,14 @@ export class CodeGenerator {
       ? `import { createWorkflowStopError } from '${runtimePrefix}/stop-and-error';\n`
       : '';
 
+    const httpStatusImport = wf.nodes.some(node => node.type.includes('httpRequest'))
+      ? `import { fetchWithStatus } from '${runtimePrefix}/http-request';\n`
+      : '';
+
     const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
-${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
+${httpStatusImport}${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
 ${legacyNames}
 const DateTime = {
   now: () => ({

@@ -222,6 +222,8 @@ Each object is downloaded in order and stored as base64 under the configured bin
 
 With `Send Headers` enabled, `specifyHeaders: 'json'` accepts either a JSON string or an object of header names and values.
 
+HTTP requests treat non-2xx statuses as errors by default. Enable **Never Error** to process the response body regardless of the status.
+
 ---
 
 ## 📚 Architecture Guides & Deep Dives

@@ -24,6 +24,15 @@ export function parseRequestHeaders(input: unknown): Headers {
   }
 }
 
+export async function fetchWithStatus(url: string, neverError: boolean, options: RequestInit): Promise<Response> {
+  const response = await fetch(url, options);
+  if (!response.ok && !neverError) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error('HTTP Request failed with status ' + response.status);
+  }
+  return response;
+}
+
 export function createRequestForm(item: N8nItem, parts: RequestFormPart[]): FormData {
   const form = new FormData();
   for (const part of parts) {

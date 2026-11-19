@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -1239,6 +1239,8 @@ ${legacyBinding}${execution}
       const urlExpr = ExpressionParser.parse(params.url || "");
       const multipart = usesMultipartBody(params);
       const jsonHeaders = usesJsonHeaders(params);
+      const legacyIgnoreError = (ctx.node.typeVersion ?? 1) < 3 ? params.options?.ignoreResponseCode : undefined;
+      const neverError = ExpressionParser.parse(params.options?.response?.response?.neverError ?? legacyIgnoreError ?? false);
       let headersObj = "{}";
       if (jsonHeaders) {
         headersObj = `parseRequestHeaders(${ExpressionParser.parse(params.jsonHeaders ?? "{}")})`;
@@ -1277,7 +1279,7 @@ ${legacyBinding}${execution}
       const targetUrl = ${urlExpr};
       ${headersSnippet}
       const reqBody = ${bodySnippet};
-      const res = await fetch(targetUrl, {
+      const res = await fetchWithStatus(targetUrl, Boolean(${neverError}), {
         method: ${JSON.stringify(method)},
         headers: reqHeaders,
         ...(reqBody !== undefined ? { body: reqBody } : {})
@@ -1473,8 +1475,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1525,10 +1527,12 @@ ${legacyBinding}${execution}
 ` : "";
       const stopAndErrorImport = wf.nodes.some((node) => node.type === stopAndErrorType) ? `import { createWorkflowStopError } from '${runtimePrefix}/stop-and-error';
 ` : "";
+      const httpStatusImport = wf.nodes.some((node) => node.type.includes("httpRequest")) ? `import { fetchWithStatus } from '${runtimePrefix}/http-request';
+` : "";
       const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
-${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
+${httpStatusImport}${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
 ${legacyNames}
 const DateTime = {
   now: () => ({
