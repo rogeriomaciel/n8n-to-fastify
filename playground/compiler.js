@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -1024,15 +1024,14 @@ ${legacyBinding}${execution}
     static mapSetNode(ctx) {
       const params = ctx.node.parameters || {};
       const prevVar = ctx.previousVariableName || "inputItems";
-      const keepOnlySet = params.options?.keepOnlySet === true || params.include === "none";
       const version = ctx.node.typeVersion ?? 3.4;
       const options = params.options ?? {};
+      const include = ExpressionParser.parse(params.include ?? "all", "source[0]", "source");
+      const includeOtherFields = version >= 3.3 ? ExpressionParser.parse(params.includeOtherFields ?? false, "source[0]", "source") : String(options.keepOnlySet !== true);
       let includeBinary;
       if (version >= 3.4) {
-        const includeOtherFields = ExpressionParser.parse(params.includeOtherFields ?? false);
-        const include = ExpressionParser.parse(params.include ?? "all");
         const stripBinary = ExpressionParser.parse(options.stripBinary ?? false);
-        includeBinary = `(${includeOtherFields}) && (${include}) !== 'none' && !(${stripBinary})`;
+        includeBinary = `includeInputFields && !(${stripBinary})`;
       } else if (version >= 3) {
         includeBinary = ExpressionParser.parse(options.includeBinary ?? false);
       } else {
@@ -1062,9 +1061,10 @@ ${legacyBinding}${execution}
       }
       return `
     // [Node: ${ctx.node.name}] Set / Edit Fields
-    ${ctx.variableName} = (${prevVar} || inputItems).map((currentItem: N8nItem) => {
+    ${ctx.variableName} = (${prevVar} || inputItems).map((currentItem: N8nItem, _index: number, source: N8nItem[]) => {
       const item = currentItem;
-      const newJson: Record<string, any> = ${keepOnlySet ? "{}" : "{ ...currentItem.json }"};
+      const includeInputFields = (${includeOtherFields}) && (${include}) !== 'none';
+      const newJson: Record<string, any> = includeInputFields ? { ...currentItem.json } : {};
       ${assignments.join(`
       `)}
       return {
@@ -1473,8 +1473,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)

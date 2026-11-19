@@ -202,15 +202,16 @@ ${legacyBinding}${execution}
   private static mapSetNode(ctx: NodeMapperContext): string {
     const params = ctx.node.parameters || {};
     const prevVar = ctx.previousVariableName || 'inputItems';
-    const keepOnlySet = params.options?.keepOnlySet === true || params.include === 'none';
     const version = ctx.node.typeVersion ?? 3.4;
     const options = params.options ?? {};
+    const include = ExpressionParser.parse(params.include ?? 'all', 'source[0]', 'source');
+    const includeOtherFields = version >= 3.3
+      ? ExpressionParser.parse(params.includeOtherFields ?? false, 'source[0]', 'source')
+      : String(options.keepOnlySet !== true);
     let includeBinary: string;
     if (version >= 3.4) {
-      const includeOtherFields = ExpressionParser.parse(params.includeOtherFields ?? false);
-      const include = ExpressionParser.parse(params.include ?? 'all');
       const stripBinary = ExpressionParser.parse(options.stripBinary ?? false);
-      includeBinary = `(${includeOtherFields}) && (${include}) !== 'none' && !(${stripBinary})`;
+      includeBinary = `includeInputFields && !(${stripBinary})`;
     } else if (version >= 3) {
       includeBinary = ExpressionParser.parse(options.includeBinary ?? false);
     } else {
@@ -246,9 +247,10 @@ ${legacyBinding}${execution}
 
     return `
     // [Node: ${ctx.node.name}] Set / Edit Fields
-    ${ctx.variableName} = (${prevVar} || inputItems).map((currentItem: N8nItem) => {
+    ${ctx.variableName} = (${prevVar} || inputItems).map((currentItem: N8nItem, _index: number, source: N8nItem[]) => {
       const item = currentItem;
-      const newJson: Record<string, any> = ${keepOnlySet ? '{}' : '{ ...currentItem.json }'};
+      const includeInputFields = (${includeOtherFields}) && (${include}) !== 'none';
+      const newJson: Record<string, any> = includeInputFields ? { ...currentItem.json } : {};
       ${assignments.join('\n      ')}
       return {
         json: newJson,
