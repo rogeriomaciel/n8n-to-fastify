@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -852,6 +852,9 @@
   }
 
   // src/compiler/mappers/http-request.ts
+  function continuesHttpOnErrorOutput(node) {
+    return node.type === "n8n-nodes-base.httpRequest" && node.typeVersion === 4.2 && node.onError === "continueErrorOutput";
+  }
   function usesMultipartBody(params) {
     return params?.sendBody === true && params.contentType === "multipart-form-data";
   }
@@ -1270,14 +1273,16 @@ ${legacyBinding}${execution}
         headersSnippet = `const reqHeaders = ${headersObj};
       if (!reqHeaders.has('content-type')) reqHeaders.set('content-type', 'application/json');`;
       }
-      return `
-    // [Node: ${ctx.node.name}] Native HTTP Request (${method})
-    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
+      const errorOutput = continuesHttpOnErrorOutput(ctx.node);
+      const neverError = ExpressionParser.parse(params.options?.response?.response?.neverError ?? false, "batch[0]", "batch");
+      const fetchResponse = errorOutput ? `fetchForErrorOutput(targetUrl, Boolean(${neverError}),` : "fetch(targetUrl,";
+      const collectItems = errorOutput ? "settleHttpErrorItems" : "Promise.all";
+      const request = `${collectItems}((${prevVar} || inputItems).map(async (currentItem: N8nItem, _index: number, batch: N8nItem[]) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
       ${headersSnippet}
       const reqBody = ${bodySnippet};
-      const res = await fetch(targetUrl, {
+      const res = await ${fetchResponse} {
         method: ${JSON.stringify(method)},
         headers: reqHeaders,
         ...(reqBody !== undefined ? { body: reqBody } : {})
@@ -1286,9 +1291,18 @@ ${legacyBinding}${execution}
       let data: any;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
       return { json: typeof data === 'object' && data !== null ? data : { data } };
-    }));
-    item = ${ctx.variableName}[0] || { json: {} };
-    ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
+    }))`;
+      const name = JSON.stringify(ctx.node.name);
+      const storeOutput = errorOutput ? `{
+      const outputs = partitionHttpErrorItems(${ctx.variableName}, ${prevVar} || inputItems);
+      ${ctx.variableName} = outputs.flat();
+      ctx.setNodeOutputs(${name}, outputs.entries(), ${ctx.variableName});
+    }` : `ctx.setNodeOutput(${name}, ${ctx.variableName});`;
+      return `
+    // [Node: ${ctx.node.name}] Native HTTP Request (${method})
+    ${ctx.variableName} = await ${request};
+    ${storeOutput}
+    item = ${ctx.variableName}[0] || { json: {} };`;
     }
     static mapAggregateNode(ctx) {
       const params = ctx.node.parameters || {};
@@ -1473,8 +1487,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1501,6 +1515,8 @@ ${legacyBinding}${execution}
       const functionName = `workflow_${this.sanitizeIdentifier(wf.fileName)}`;
       const depth = (wf.relativePath.match(/\//g) || []).length;
       const runtimePrefix = "../".repeat(depth + 1) + "runtime";
+      const httpErrorOutputImport = wf.nodes.some((node) => !node.disabled && continuesHttpOnErrorOutput(node)) ? `import { fetchForErrorOutput, partitionHttpErrorItems, settleHttpErrorItems } from '${runtimePrefix}/http-error-output';
+` : "";
       const positionMergeImport = wf.nodes.some(isPositionMerge) ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';
 ` : "";
       const legacyNodes = new Set(wf.nodes.filter((node) => usesLegacyNodeReferences(node) || usesRawLegacyNodeReferences(node)));
@@ -1529,7 +1545,7 @@ ${legacyBinding}${execution}
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
-${legacyNames}
+${httpErrorOutputImport}${legacyNames}
 const DateTime = {
   now: () => ({
     toString: () => new Date().toISOString(),

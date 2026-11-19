@@ -104,6 +104,7 @@ Place a `.env` file in the generated service directory and run `bun run start` f
 | **Switch** | Routes each item by rule or output-index expression, with configurable fallback in rules mode |
 | **Set / Edit Fields** | Manual assignments, v3.4 JSON Output, dot-notation, `keepOnlySet`, and binary preservation |
 | **HTTP Request** | Native `fetch()` with JSON headers and JSON or multipart form bodies |
+| **HTTP Request on Error** | v4.2 can route failed items to the error output with their input JSON, original item index, and a safe error summary |
 | **Aggregate** | In-memory item aggregation |
 | **Split Out** | Expands nested arrays into individual `N8nItem[]` items |
 | **Merge** | Appends branches or combines items by position across up to ten destination ports |

@@ -8,7 +8,7 @@ import { getRabbitMqPublisherIssue, rabbitMqPublisherType } from './mappers/rabb
 import { getS3DownloadIssue, s3NodeType } from './mappers/s3';
 import { compressionNodeType, getCompressionIssue } from './mappers/compression';
 import { convertToFileType, getConvertToFileIssue } from './mappers/convert-to-file';
-import { getMultipartIssue, usesMultipartBody } from './mappers/http-request';
+import { continuesHttpOnErrorOutput, getMultipartIssue, usesMultipartBody } from './mappers/http-request';
 import { getWaitIntervalIssue, waitNodeType } from './mappers/wait-interval';
 import { getStopAndErrorIssue, stopAndErrorType } from './mappers/stop-and-error';
 import { parseRabbitMqTrigger, rabbitMqTriggerType } from './rabbitmq-trigger';
@@ -72,8 +72,14 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     if (node.continueOnFail) {
       report(node.name, 'legacy continueOnFail is ignored');
     }
-    if (node.onError && node.onError !== 'stopWorkflow' && !continuesCodeOnRegularOutput(node)) {
+    if (node.onError && node.onError !== 'stopWorkflow' && !continuesCodeOnRegularOutput(node) && !continuesHttpOnErrorOutput(node)) {
       report(node.name, 'the configured onError behavior is ignored');
+    }
+    if (continuesHttpOnErrorOutput(node) && node.retryOnFail) {
+      report(node.name, 'HTTP Request Retry On Fail is ignored');
+    }
+    if (continuesHttpOnErrorOutput(node) && node.parameters?.options?.timeout !== undefined) {
+      report(node.name, 'HTTP Request timeout is ignored');
     }
     if (node.type === rabbitMqPublisherType) {
       const issue = getRabbitMqPublisherIssue(node);

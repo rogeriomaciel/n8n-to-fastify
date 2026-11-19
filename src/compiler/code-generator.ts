@@ -11,7 +11,7 @@ import { compressionNodeType } from './mappers/compression';
 import { convertToFileType } from './mappers/convert-to-file';
 import { stopAndErrorType } from './mappers/stop-and-error';
 import { waitNodeType } from './mappers/wait-interval';
-import { usesJsonHeaders, usesMultipartBody } from './mappers/http-request';
+import { continuesHttpOnErrorOutput, usesJsonHeaders, usesMultipartBody } from './mappers/http-request';
 import { rabbitMqTriggerType } from './rabbitmq-trigger';
 
 export class CodeGenerator {
@@ -29,6 +29,9 @@ export class CodeGenerator {
     const functionName = `workflow_${this.sanitizeIdentifier(wf.fileName)}`;
     const depth = (wf.relativePath.match(/\//g) || []).length;
     const runtimePrefix = '../'.repeat(depth + 1) + 'runtime';
+    const httpErrorOutputImport = wf.nodes.some(node => !node.disabled && continuesHttpOnErrorOutput(node))
+      ? `import { fetchForErrorOutput, partitionHttpErrorItems, settleHttpErrorItems } from '${runtimePrefix}/http-error-output';\n`
+      : '';
     const positionMergeImport = wf.nodes.some(isPositionMerge)
       ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';\n`
       : '';
@@ -71,7 +74,7 @@ export class CodeGenerator {
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
-${legacyNames}
+${httpErrorOutputImport}${legacyNames}
 const DateTime = {
   now: () => ({
     toString: () => new Date().toISOString(),

@@ -10,7 +10,7 @@ import { compressionNodeType, mapCompression } from './compression';
 import { convertToFileType, mapConvertToFile } from './convert-to-file';
 import { mapWaitInterval, waitNodeType } from './wait-interval';
 import { mapStopAndError, stopAndErrorType } from './stop-and-error';
-import { generateMultipartBody, getMultipartIssue, usesJsonHeaders, usesMultipartBody } from './http-request';
+import { continuesHttpOnErrorOutput, generateMultipartBody, getMultipartIssue, usesJsonHeaders, usesMultipartBody } from './http-request';
 
 export interface NodeMapperContext {
   node: N8nNode;
@@ -476,14 +476,16 @@ ${legacyBinding}${execution}
       if (!reqHeaders.has('content-type')) reqHeaders.set('content-type', 'application/json');`;
     }
 
-    return `
-    // [Node: ${ctx.node.name}] Native HTTP Request (${method})
-    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
+    const errorOutput = continuesHttpOnErrorOutput(ctx.node);
+    const neverError = ExpressionParser.parse(params.options?.response?.response?.neverError ?? false, 'batch[0]', 'batch');
+    const fetchResponse = errorOutput ? `fetchForErrorOutput(targetUrl, Boolean(${neverError}),` : 'fetch(targetUrl,';
+    const collectItems = errorOutput ? 'settleHttpErrorItems' : 'Promise.all';
+    const request = `${collectItems}((${prevVar} || inputItems).map(async (currentItem: N8nItem, _index: number, batch: N8nItem[]) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
       ${headersSnippet}
       const reqBody = ${bodySnippet};
-      const res = await fetch(targetUrl, {
+      const res = await ${fetchResponse} {
         method: ${JSON.stringify(method)},
         headers: reqHeaders,
         ...(reqBody !== undefined ? { body: reqBody } : {})
@@ -492,9 +494,16 @@ ${legacyBinding}${execution}
       let data: any;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
       return { json: typeof data === 'object' && data !== null ? data : { data } };
-    }));
-    item = ${ctx.variableName}[0] || { json: {} };
-    ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
+    }))`;
+    const name = JSON.stringify(ctx.node.name);
+    const storeOutput = errorOutput
+      ? `{\n      const outputs = partitionHttpErrorItems(${ctx.variableName}, ${prevVar} || inputItems);\n      ${ctx.variableName} = outputs.flat();\n      ctx.setNodeOutputs(${name}, outputs.entries(), ${ctx.variableName});\n    }`
+      : `ctx.setNodeOutput(${name}, ${ctx.variableName});`;
+    return `
+    // [Node: ${ctx.node.name}] Native HTTP Request (${method})
+    ${ctx.variableName} = await ${request};
+    ${storeOutput}
+    item = ${ctx.variableName}[0] || { json: {} };`;
   }
 
   private static mapAggregateNode(ctx: NodeMapperContext): string {
