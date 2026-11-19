@@ -10,6 +10,7 @@ import { compressionNodeType, mapCompression } from './compression';
 import { convertToFileType, mapConvertToFile } from './convert-to-file';
 import { mapWaitInterval, waitNodeType } from './wait-interval';
 import { mapStopAndError, stopAndErrorType } from './stop-and-error';
+import { usesNodeRetry, withNodeRetry } from './node-retry';
 import { generateMultipartBody, getMultipartIssue, usesJsonHeaders, usesMultipartBody } from './http-request';
 
 export interface NodeMapperContext {
@@ -476,9 +477,8 @@ ${legacyBinding}${execution}
       if (!reqHeaders.has('content-type')) reqHeaders.set('content-type', 'application/json');`;
     }
 
-    return `
-    // [Node: ${ctx.node.name}] Native HTTP Request (${method})
-    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
+    const collectItems = usesNodeRetry(ctx.node) ? 'settleRetryRequests' : 'Promise.all';
+    const request = `${collectItems}((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
       ${headersSnippet}
@@ -492,7 +492,10 @@ ${legacyBinding}${execution}
       let data: any;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
       return { json: typeof data === 'object' && data !== null ? data : { data } };
-    }));
+    }))`;
+    return `
+    // [Node: ${ctx.node.name}] Native HTTP Request (${method})
+    ${ctx.variableName} = await ${withNodeRetry(ctx.node, request)};
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
   }

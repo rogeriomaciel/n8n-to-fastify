@@ -13,6 +13,7 @@ import { stopAndErrorType } from './mappers/stop-and-error';
 import { waitNodeType } from './mappers/wait-interval';
 import { usesJsonHeaders, usesMultipartBody } from './mappers/http-request';
 import { rabbitMqTriggerType } from './rabbitmq-trigger';
+import { usesNodeRetry } from './mappers/node-retry';
 
 export class CodeGenerator {
   static sanitizeIdentifier(str: string): string {
@@ -40,6 +41,10 @@ export class CodeGenerator {
       : '';
     const legacyImport = legacyNodes.size > 0
       ? `import { createLegacyNodeReferences } from '${runtimePrefix}/code-context';\n`
+      : '';
+    const retryNodes = wf.nodes.filter(node => !node.disabled && usesNodeRetry(node));
+    const retryImport = retryNodes.length > 0
+      ? `import { runWithNodeRetry${retryNodes.some(node => node.type === 'n8n-nodes-base.httpRequest') ? ', settleRetryRequests' : ''} } from '${runtimePrefix}/node-retry';\n`
       : '';
     const legacyNames = legacyNodes.size > 0
       ? `const legacyNodeNames = new Set<string>(${JSON.stringify(wf.nodes.map(node => node.name))});\n`
@@ -72,7 +77,7 @@ import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
 ${legacyNames}
-const DateTime = {
+${retryImport}const DateTime = {
   now: () => ({
     toString: () => new Date().toISOString(),
     toJSDate: () => new Date()

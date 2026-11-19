@@ -17,6 +17,7 @@ test('S3 v1 download preserves item order, JSON and binary content', () => {
     const service = path.join(dir, 'service');
     const node = {
       name: 'Fetch file', type: 'n8n-nodes-base.s3', typeVersion: 1,
+      retryOnFail: true, maxTries: 2, waitBetweenTries: 1,
       parameters: {
         bucketName: '={{ $json.bucket }}',
         fileKey: '={{ $json.key }}',
@@ -32,6 +33,7 @@ test('S3 v1 download preserves item order, JSON and binary content', () => {
     expect(manifest.dependencies['mime-types']).toBeDefined();
 
     writeModule(service, '@aws-sdk/client-s3', `
+      let transientFailures = 0;
       exports.GetObjectCommand = class { constructor(input) { this.input = input; } };
       exports.S3Client = class {
         constructor(config) {
@@ -44,6 +46,9 @@ test('S3 v1 download preserves item order, JSON and binary content', () => {
           if (input.Bucket !== 'first' && input.Bucket !== 'second') throw new Error('unexpected bucket');
           if (input.Key === 'missing') {
             throw Object.assign(new Error('fixture-sensitive-detail'), { name: 'NoSuchKey' });
+          }
+          if (input.Key === 'draft.txt' && transientFailures++ === 0) {
+            throw new Error('fixture transient error');
           }
           return {
             Body: { transformToByteArray: async () => Buffer.from(input.Bucket === 'first' ? [0, 255] : [1, 2, 3]) },

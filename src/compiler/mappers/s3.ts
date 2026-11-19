@@ -1,6 +1,7 @@
 import type { N8nNode } from '../core-parser';
 import { ExpressionParser } from '../expression-parser';
 import type { NodeMapperContext } from './index';
+import { withNodeRetry } from './node-retry';
 
 export const s3NodeType = 'n8n-nodes-base.s3';
 
@@ -26,15 +27,15 @@ export function mapS3Download(ctx: NodeMapperContext): string {
   const key = ExpressionParser.parse(params.fileKey);
   const binaryProperty = ExpressionParser.parse(params.binaryPropertyName ?? 'data');
 
-  return `
-    {
-      const downloads = (${source} || inputItems).map((item: N8nItem) => ({
+  const download = `downloadS3Files((${source} || inputItems).map((item: N8nItem) => ({
         item,
         bucket: String(${bucket} ?? ''),
         key: String(${key} ?? ''),
         binaryProperty: String(${binaryProperty} ?? ''),
-      }));
-      ${ctx.variableName} = await downloadS3Files(downloads);
+      })))`;
+  return `
+    {
+      ${ctx.variableName} = await ${withNodeRetry(ctx.node, download)};
       item = ${ctx.variableName}[0] || { json: {} };
       ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});
     }`;

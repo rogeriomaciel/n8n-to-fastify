@@ -224,6 +224,10 @@ With `Send Headers` enabled, `specifyHeaders: 'json'` accepts either a JSON stri
 
 ---
 
+## Retry On Fail
+
+HTTP Request and S3 Download replay the entire input batch when **Retry On Fail** is enabled. The default is three attempts with one second between attempts. HTTP Request waits for all requests in the current batch to settle before starting the next attempt.
+
 ## 📚 Architecture Guides & Deep Dives
 
 If you are evaluating or running `n8n-to-fastify` in production, these engineering notes document the design decisions behind the compiler:

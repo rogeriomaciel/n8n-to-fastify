@@ -1,4 +1,5 @@
 import type { ParsedWorkflow } from './core-parser';
+import { usesNodeRetry } from './mappers/node-retry';
 import { getDisabledNodeMode } from './disabled-node';
 import { getPositionMergeIssue, isPositionMerge } from './mappers/position-merge';
 import { getLegacyNodeReferenceIssue } from './mappers/code-context';
@@ -68,6 +69,9 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     if (!supportedNodeTypes.has(node.type)) {
       report(node.name, `unsupported node type ${JSON.stringify(node.type)}`);
       continue;
+    }
+    if (node.retryOnFail === true && !usesNodeRetry(node)) {
+      report(node.name, 'Retry On Fail is only supported for HTTP Request and S3 Download');
     }
     if (node.continueOnFail) {
       report(node.name, 'legacy continueOnFail is ignored');

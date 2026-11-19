@@ -12,6 +12,9 @@ export interface N8nNode {
   disabled?: boolean;
   continueOnFail?: boolean;
   onError?: string;
+  retryOnFail?: boolean;
+  maxTries?: number;
+  waitBetweenTries?: number;
   incomingConnections?: N8nIncomingConnection[];
   ancestorTriggers?: string[];
 }
