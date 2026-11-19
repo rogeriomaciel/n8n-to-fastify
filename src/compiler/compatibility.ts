@@ -1,4 +1,5 @@
 import type { ParsedWorkflow } from './core-parser';
+import { planLanguageModels } from './mappers/linked-llm';
 import { getDisabledNodeMode } from './disabled-node';
 import { getPositionMergeIssue, isPositionMerge } from './mappers/position-merge';
 import { getLegacyNodeReferenceIssue } from './mappers/code-context';
@@ -50,16 +51,18 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     issues.push(`Workflow ${workflowLabel}, node ${JSON.stringify(nodeName)}: ${issue}`);
   };
 
+  const { chains, modelSubnodes, issues: modelIssues } = planLanguageModels(workflow);
+  for (const [nodeName, issue] of modelIssues) report(nodeName, issue);
   for (const [source, outputs] of Object.entries(workflow.connections)) {
     for (const type of Object.keys(outputs)) {
-      if (type !== 'main') {
+      if (type !== 'main' && type !== 'ai_languageModel') {
         report(source, `connection type ${JSON.stringify(type)} is ignored`);
       }
     }
   }
 
   for (const node of workflow.nodes) {
-    if (node.type === 'n8n-nodes-base.stickyNote') continue;
+    if (node.type === 'n8n-nodes-base.stickyNote' || modelSubnodes.has(node)) continue;
     if (node.type === rabbitMqTriggerType && node.disabled) continue;
     if (node.disabled) {
       if (!getDisabledNodeMode(node, workflow)) report(node.name, 'disabled node configuration is unsupported');
@@ -71,6 +74,9 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     }
     if (node.continueOnFail) {
       report(node.name, 'legacy continueOnFail is ignored');
+    }
+    if (chains.has(node) && 'retryOnFail' in node && node.retryOnFail === true) {
+      report(node.name, 'Retry On Fail is unsupported for linked Basic LLM Chain');
     }
     if (node.onError && node.onError !== 'stopWorkflow' && !continuesCodeOnRegularOutput(node)) {
       report(node.name, 'the configured onError behavior is ignored');

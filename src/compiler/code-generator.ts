@@ -13,6 +13,7 @@ import { stopAndErrorType } from './mappers/stop-and-error';
 import { waitNodeType } from './mappers/wait-interval';
 import { usesJsonHeaders, usesMultipartBody } from './mappers/http-request';
 import { rabbitMqTriggerType } from './rabbitmq-trigger';
+import { mapLinkedLlmChain, planLanguageModels } from './mappers/linked-llm';
 
 export class CodeGenerator {
   static sanitizeIdentifier(str: string): string {
@@ -29,6 +30,10 @@ export class CodeGenerator {
     const functionName = `workflow_${this.sanitizeIdentifier(wf.fileName)}`;
     const depth = (wf.relativePath.match(/\//g) || []).length;
     const runtimePrefix = '../'.repeat(depth + 1) + 'runtime';
+    const { chains, modelSubnodes } = planLanguageModels(wf);
+    const linkedLlmImport = [...chains.values()].some(Boolean)
+      ? `import { runLinkedLlmChain } from '${runtimePrefix}/linked-llm';\n`
+      : '';
     const positionMergeImport = wf.nodes.some(isPositionMerge)
       ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';\n`
       : '';
@@ -71,7 +76,7 @@ export class CodeGenerator {
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
-${legacyNames}
+${linkedLlmImport}${legacyNames}
 const DateTime = {
   now: () => ({
     toString: () => new Date().toISOString(),
@@ -92,12 +97,15 @@ const DateTime = {
     const triggers = wf.triggers;
     const hasRabbitMqTrigger = triggers.some(node => node.type === rabbitMqTriggerType);
     const disabledModes = new Map(wf.orderedNodes.map(node => [node, getDisabledNodeMode(node, wf)]));
-    const nonTriggers = wf.orderedNodes.filter((n) => !triggers.includes(n) && disabledModes.get(n) !== 'skip');
+    const nonTriggers = wf.orderedNodes.filter(n => !triggers.includes(n) && !modelSubnodes.has(n) && disabledModes.get(n) !== 'skip');
     const loops = wf.pollingLoops ?? [];
     const loopsByMember = new Map(loops.flatMap(loop => loop.nodes.map(name => [name, loop] as const)));
     const terminalNames = new Set(loops.flatMap(loop => loop.terminalExits.map(exit => exit.target)));
     const mapNode = (node: N8nNode, previousVariableName: string) => {
       const varName = nodeVarMap.get(node.name)!;
+      if (chains.has(node) && disabledModes.get(node) !== 'passthrough') {
+        return mapLinkedLlmChain({ node, workflowName: wf.name, variableName: varName, previousVariableName }, chains.get(node) ?? null);
+      }
       return disabledModes.get(node) === 'passthrough'
         ? `
     ${varName} = ${previousVariableName} || [];
@@ -182,7 +190,7 @@ ${nodeCode.trim()}
     });
 
     const lastNodeName = wf.orderedNodes
-      .filter(node => disabledModes.get(node) !== 'skip' && (node.type !== stopAndErrorType || node.disabled))
+      .filter(node => !modelSubnodes.has(node) && disabledModes.get(node) !== 'skip' && (node.type !== stopAndErrorType || node.disabled))
       .at(-1)?.name;
     const returnItemsExpr = lastNodeName
       ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])`

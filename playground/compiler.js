@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -1473,8 +1473,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1492,6 +1492,132 @@ ${legacyBinding}${execution}
       return "skip";
   }
 
+  // src/compiler/mappers/linked-llm.ts
+  var prefix = "@n8n/n8n-nodes-langchain.";
+  var chainType = prefix + "chainLlm";
+  var connectionType = "ai_languageModel";
+  var modelTypes = new Map([
+    [prefix + "lmChatGroq", {
+      transport: "chat-completions",
+      options: { temperature: "temperature", maxTokensToSample: "max_tokens" },
+      defaults: { temperature: 0.7 }
+    }],
+    [prefix + "lmChatOllama", { transport: "ollama", options: { temperature: "temperature", topK: "top_k", topP: "top_p", numPredict: "num_predict" } }]
+  ]);
+  var roles = new Map([
+    ["SystemMessagePromptTemplate", "system"],
+    ["HumanMessagePromptTemplate", "user"],
+    ["AIMessagePromptTemplate", "assistant"]
+  ]);
+  function readModel(node) {
+    const definition = modelTypes.get(node.type);
+    const params = node.parameters ?? {};
+    const options = params.options ?? {};
+    if (!definition || node.typeVersion !== 1 || node.disabled || !node.id || typeof params.model !== "string" || !params.model.trim() || typeof options !== "object" || Array.isArray(options))
+      return;
+    const entries = new Map(Object.entries(definition.defaults ?? {}));
+    for (const [key, value] of Object.entries(options)) {
+      if (!Object.hasOwn(definition.options, key) || typeof value !== "number" && !(typeof value === "string" && value.startsWith("=")))
+        return;
+      entries.set(definition.options[key], value);
+    }
+    return { id: node.id, transport: definition.transport, model: params.model, options: [...entries] };
+  }
+  function supportsChain(node) {
+    const params = node.parameters ?? {};
+    const messages = params.messages?.messageValues ?? [];
+    return node.typeVersion === 1.7 && params.promptType === "define" && typeof params.text === "string" && !params.hasOutputParser && (params.needsFallback === undefined || typeof params.needsFallback === "boolean") && Array.isArray(messages) && messages.every((message) => message && roles.has(message.type ?? "SystemMessagePromptTemplate") && (message.messageType ?? "text") === "text" && typeof message.message === "string");
+  }
+  function planLanguageModels(workflow) {
+    const nodes = new Map(workflow.nodes.map((node) => [node.name, node]));
+    const modelSubnodes = new Set(workflow.nodes.filter((node) => {
+      const main = workflow.connections[node.name]?.main;
+      return modelTypes.has(node.type) && !node.incomingConnections?.length && (main === undefined || Array.isArray(main) && !main.some((port) => port?.length));
+    }));
+    const inputs = new Map;
+    const invalid = new Set;
+    const issues = [];
+    for (const [source, outputs] of Object.entries(workflow.connections)) {
+      if (!outputs || !Object.hasOwn(outputs, connectionType))
+        continue;
+      const ports = outputs[connectionType];
+      if (!Array.isArray(ports)) {
+        issues.push([source, "invalid language model connection"]);
+        continue;
+      }
+      for (const [port, edges] of ports.entries()) {
+        if (edges == null)
+          continue;
+        if (!Array.isArray(edges)) {
+          issues.push([source, "invalid language model connection"]);
+          continue;
+        }
+        for (const edge of edges) {
+          const target = nodes.get(edge?.node);
+          if (!target || target.type !== chainType) {
+            issues.push([source, "language model output must connect to a Basic LLM Chain"]);
+            continue;
+          }
+          let slots = inputs.get(target);
+          if (!slots)
+            inputs.set(target, slots = new Map);
+          const modelNode = nodes.get(source);
+          const model = modelNode && modelSubnodes.has(modelNode) ? readModel(modelNode) : undefined;
+          if (!model || edge.type !== connectionType || port !== 0 || edge.index !== 0 && edge.index !== 1 || slots.has(edge.index)) {
+            invalid.add(target);
+          } else {
+            slots.set(edge.index, model);
+          }
+        }
+      }
+    }
+    for (const node of workflow.nodes) {
+      if (node.type === chainType && !node.disabled && node.parameters?.needsFallback === true && !inputs.has(node)) {
+        inputs.set(node, new Map);
+      }
+    }
+    const chains = new Map;
+    for (const [chain, slots] of inputs) {
+      const primary = slots.get(0);
+      const fallback = slots.get(1);
+      if (invalid.has(chain) || !supportsChain(chain) || !primary || chain.parameters?.needsFallback === true !== Boolean(fallback)) {
+        issues.push([chain.name, "linked Basic LLM Chain requires v1.7 text prompts, one compatible primary model, and a fallback only when enabled"]);
+        chains.set(chain, null);
+      } else {
+        chains.set(chain, { primary, fallback });
+      }
+    }
+    return { chains, modelSubnodes, issues };
+  }
+  function mapLinkedLlmChain(ctx, models) {
+    if (!models)
+      return 'throw new Error("Unsupported linked Basic LLM Chain configuration");';
+    const params = ctx.node.parameters ?? {};
+    const prompt = ExpressionParser.parse(params.text, "source[0]", "source");
+    const messages = (params.messages?.messageValues ?? []).map((message) => {
+      const role = roles.get(message.type ?? "SystemMessagePromptTemplate");
+      return `{ role: ${JSON.stringify(role)}, content: String(${ExpressionParser.parse(message.message, "source[0]", "source")} ?? '') }`;
+    });
+    const renderModel = ({ id, transport, model, options }) => `{
+      id: ${JSON.stringify(id)}, transport: ${JSON.stringify(transport)}, model: String(${ExpressionParser.parse(model, "source[0]", "source")} ?? ''),
+      options: { ${options.map(([key, value]) => `${JSON.stringify(key)}: ${ExpressionParser.parse(value, "source[0]", "source")}`).join(", ")} },
+    }`;
+    const batchSize = ExpressionParser.parse(params.batching?.batchSize ?? 5, "source[0]", "source");
+    const delay = ExpressionParser.parse(params.batching?.delayBetweenBatches ?? 0, "source[0]", "source");
+    return `
+    {
+      const source: N8nItem[] = ${ctx.previousVariableName ?? "inputItems"} || inputItems;
+      ${ctx.variableName} = await runLinkedLlmChain(source, item => [${[...messages, `{ role: 'user', content: String(${prompt} ?? '') }`].join(", ")}], item => ({
+        primary: ${renderModel(models.primary)},
+        ${models.fallback ? `fallback: ${renderModel(models.fallback)},` : ""}
+        batchSize: Number(${batchSize}),
+        delay: Number(${delay}),
+      }));
+      item = ${ctx.variableName}[0] || { json: {} };
+      ctx.setNodeOutputs(${JSON.stringify(ctx.node.name)}, [[0, ${ctx.variableName}]], ${ctx.variableName});
+    }`;
+  }
+
   // src/compiler/code-generator.ts
   class CodeGenerator {
     static sanitizeIdentifier(str) {
@@ -1501,6 +1627,9 @@ ${legacyBinding}${execution}
       const functionName = `workflow_${this.sanitizeIdentifier(wf.fileName)}`;
       const depth = (wf.relativePath.match(/\//g) || []).length;
       const runtimePrefix = "../".repeat(depth + 1) + "runtime";
+      const { chains, modelSubnodes } = planLanguageModels(wf);
+      const linkedLlmImport = [...chains.values()].some(Boolean) ? `import { runLinkedLlmChain } from '${runtimePrefix}/linked-llm';
+` : "";
       const positionMergeImport = wf.nodes.some(isPositionMerge) ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';
 ` : "";
       const legacyNodes = new Set(wf.nodes.filter((node) => usesLegacyNodeReferences(node) || usesRawLegacyNodeReferences(node)));
@@ -1529,7 +1658,7 @@ ${legacyBinding}${execution}
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
-${legacyNames}
+${linkedLlmImport}${legacyNames}
 const DateTime = {
   now: () => ({
     toString: () => new Date().toISOString(),
@@ -1549,12 +1678,15 @@ const DateTime = {
       const triggers = wf.triggers;
       const hasRabbitMqTrigger = triggers.some((node) => node.type === rabbitMqTriggerType);
       const disabledModes = new Map(wf.orderedNodes.map((node) => [node, getDisabledNodeMode(node, wf)]));
-      const nonTriggers = wf.orderedNodes.filter((n) => !triggers.includes(n) && disabledModes.get(n) !== "skip");
+      const nonTriggers = wf.orderedNodes.filter((n) => !triggers.includes(n) && !modelSubnodes.has(n) && disabledModes.get(n) !== "skip");
       const loops = wf.pollingLoops ?? [];
       const loopsByMember = new Map(loops.flatMap((loop) => loop.nodes.map((name) => [name, loop])));
       const terminalNames = new Set(loops.flatMap((loop) => loop.terminalExits.map((exit) => exit.target)));
       const mapNode = (node, previousVariableName) => {
         const varName = nodeVarMap.get(node.name);
+        if (chains.has(node) && disabledModes.get(node) !== "passthrough") {
+          return mapLinkedLlmChain({ node, workflowName: wf.name, variableName: varName, previousVariableName }, chains.get(node) ?? null);
+        }
         return disabledModes.get(node) === "passthrough" ? `
     ${varName} = ${previousVariableName} || [];
     item = ${varName}[0] || { json: {} };
@@ -1622,7 +1754,7 @@ ${nodeCode.trim()}
         }
         bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode, ancestorTriggers.length > 0 ? "      " : "    ");
       });
-      const lastNodeName = wf.orderedNodes.filter((node) => disabledModes.get(node) !== "skip" && (node.type !== stopAndErrorType || node.disabled)).at(-1)?.name;
+      const lastNodeName = wf.orderedNodes.filter((node) => !modelSubnodes.has(node) && disabledModes.get(node) !== "skip" && (node.type !== stopAndErrorType || node.disabled)).at(-1)?.name;
       const returnItemsExpr = lastNodeName ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])` : `inputItems`;
       const keys = Array.from(new Set([wf.id, wf.name, wf.fileName])).filter(Boolean);
       return `${imports}
