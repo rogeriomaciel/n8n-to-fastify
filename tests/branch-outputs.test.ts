@@ -11,6 +11,7 @@ async function withGeneratedWorkflow(
   parameters: Record<string, unknown>,
   check: (run: CompiledWorkflowFn) => Promise<void>,
   graph?: { nodes: object[]; connections: object },
+  onError?: string,
 ) {
   const dir = mkdtempSync(path.join(tmpdir(), 'n2f-branches-'));
   try {
@@ -19,7 +20,7 @@ async function withGeneratedWorkflow(
     const sinks = ['Output 0', 'Output 1', 'Output 2'];
     writeFileSync(input, JSON.stringify({
       nodes: [
-        { name: 'Decision', type: `n8n-nodes-base.${type}`, typeVersion, parameters },
+        { name: 'Decision', type: `n8n-nodes-base.${type}`, typeVersion, parameters, onError },
         ...(graph?.nodes ?? sinks.map(name => ({
           name, type: 'n8n-nodes-base.code', typeVersion: 2,
           parameters: { jsCode: 'return $input.all();' },
@@ -27,7 +28,10 @@ async function withGeneratedWorkflow(
       ],
       connections: graph?.connections ?? { Decision: { main: sinks.map(node => [{ node, type: 'main', index: 0 }]) } },
     }));
-    const compiled = Bun.spawnSync([process.execPath, path.resolve('bin/cli.ts'), 'compile', input, '--out', output]);
+    const compiled = Bun.spawnSync([
+      process.execPath, path.resolve('bin/cli.ts'), 'compile', input, '--out', output, ...(onError ? ['--strict'] : []),
+    ]);
+    if (onError) expect(compiled.stderr.toString()).toBe('');
     expect(compiled.exitCode).toBe(0);
     const { workflow_branches } = await import(path.join(output, 'workflows', 'branches.ts'));
     await check(workflow_branches);
@@ -153,4 +157,52 @@ test('Switch retains output zero as the extra fallback with no rules', async () 
     const { context } = await run([{ json: { id: 'fallback' } }]);
     expect(ids(context.getNode('Output 0').all())).toEqual(['fallback']);
   });
+});
+
+test('Switch 3.2 sends boolean rule errors to port zero and keeps processing the batch', async () => {
+  const rule = (operation: string) => ({
+    conditions: {
+      options: { version: 2, typeValidation: 'strict' },
+      conditions: [{ leftValue: '={{ $json.ready }}', operator: { type: 'boolean', operation } }],
+      combinator: 'and',
+    },
+  });
+  const parameters = { rules: { values: [rule('false'), rule('true')] } };
+  const bad = { json: { id: 'bad', ready: 'fixture' } };
+  await withGeneratedWorkflow('switch', 3.2, parameters, async run => {
+    const nil = { json: { id: 'nil', ready: null } };
+    const yes = { json: { id: 'yes', ready: true } };
+    const no = { json: { id: 'no', ready: false } };
+    const missing = { json: { id: 'missing' } };
+    const failure = { json: { error: 'Switch expected a boolean condition value' } };
+    const { context } = await run([bad, nil, yes, no, missing]);
+    expect(context.getNodeOutput('Output 0', 0)).toEqual([
+      failure,
+      { ...nil, pairedItem: { item: 1 } },
+      { ...no, pairedItem: { item: 3 } },
+      { ...missing, pairedItem: { item: 4 } },
+    ]);
+    expect(context.getNodeOutput('Output 1', 0)).toEqual([{ ...yes, pairedItem: { item: 2 } }]);
+    expect(context.hasExecutedNode('Output 2')).toBe(false);
+    const single = await run([bad]);
+    expect(single.context.getNodeOutput('Output 0', 0)).toEqual([{ ...failure, pairedItem: { item: 0 } }]);
+    expect(single.context.hasExecutedNode('Output 1')).toBe(false);
+  }, undefined, 'continueRegularOutput');
+});
+
+test.each([null, '={{ null }}'])('Switch routes a null boolean value through the false rule (%s)', async leftValue => {
+  const parameters = { rules: { values: [{
+    conditions: {
+      options: { version: 2, typeValidation: 'strict' },
+      conditions: [{ leftValue, operator: { type: 'boolean', operation: 'false' } }],
+    },
+  }] } };
+  await withGeneratedWorkflow('switch', 3.2, parameters, async run => {
+    const items = [{ json: { id: 'first' } }, { json: { id: 'second' } }];
+    const { context } = await run(items);
+    expect(context.getNode('Output 0').all()).toEqual(items.map((item, index) => ({
+      ...item, pairedItem: { item: index },
+    })));
+    expect(context.hasExecutedNode('Output 1')).toBe(false);
+  }, undefined, 'continueRegularOutput');
 });

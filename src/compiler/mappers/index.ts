@@ -2,6 +2,7 @@ import { N8nNode } from '../parser';
 import { ExpressionParser } from '../expression-parser';
 import { isPositionMerge, mapPositionMerge } from './position-merge';
 import { getLegacyNodeReferenceIssue } from './code-context';
+import { continuesSwitchOnRegularOutput } from './switch-errors';
 import { continuesCodeOnRegularOutput } from './code-errors';
 import { getRawEditFieldsIssue, isRawEditFields, mapRawEditFields } from './raw-edit-fields';
 import { mapRabbitMqPublisher, rabbitMqPublisherType } from './rabbitmq';
@@ -366,7 +367,7 @@ ${legacyBinding}${execution}
   private static mapSwitchNode(ctx: NodeMapperContext): string {
     const params = ctx.node.parameters || {};
     const prevVar = ctx.previousVariableName || 'inputItems';
-    const rules: Array<{ conditions?: unknown }> = params.rules?.values || [];
+    const rules: Array<{ conditions?: { conditions: Array<{ leftValue: unknown; operator: { operation: string } }> } }> = params.rules?.values || [];
     const options = params.options ?? {};
     const fallback = options.fallbackOutput ?? 'none';
     const fallbackPort = fallback === 'extra' ? rules.length : fallback;
@@ -380,10 +381,22 @@ ${legacyBinding}${execution}
         }`
       : '';
 
-    const predicates = rules.map(rule => `(item: N8nItem) => (${rule.conditions ? this.parseConditions(rule.conditions) : 'false'})`);
-    const matchRules = `
-      const predicates = [${predicates.join(', ')}];
-      for (const item of source) {
+    const continueErrors = continuesSwitchOnRegularOutput(ctx.node);
+    const predicates = rules.map(rule => {
+      if (!continueErrors) {
+        return `(item: N8nItem) => (${rule.conditions ? this.parseConditions(rule.conditions) : 'false'})`;
+      }
+      const [condition] = rule.conditions!.conditions;
+      const value = condition.leftValue === null ? 'null' : ExpressionParser.parse(condition.leftValue, 'firstInputItem');
+      return `(item: N8nItem) => {
+        const value = ${value};
+        if (value != null && typeof value !== 'boolean') {
+          throw new Error('Switch expected a boolean condition value');
+        }
+        return (value ?? false) === ${condition.operator.operation};
+      }`;
+    });
+    const routeRules = `
         let matched = false;
         for (const [port, matches] of predicates.entries()) {
           if (matches(item)) {
@@ -393,8 +406,27 @@ ${legacyBinding}${execution}
           }
         }
         ${fallbackCode}
-        if (matched) routed.push(item);
-      }`;
+        if (matched) routed.push(item);`;
+    const matchRules = `
+      const predicates = [${predicates.join(', ')}];
+      ${continueErrors ? `for (const [index, input] of source.entries()) {
+        try {
+          const item = { ...input, pairedItem: { item: index } };
+          ${routeRules}
+        } catch (error) {
+          const item: N8nItem = { json: { error: error instanceof Error ? error.message : String(error) } };
+          if (source.length === 1) item.pairedItem = { item: 0 };
+          send(item, 0);
+          routed.push(item);
+        }
+      }
+      ${rules.length === 1 && fallback !== 'extra' ? `
+      const output = outputs.get(0);
+      if (output?.length === source.length) {
+        output.forEach((item, index) => { item.pairedItem ??= { item: index }; });
+      }` : ''}` : `for (const item of source) {
+        ${routeRules}
+      }`}`;
     const matchExpression = `
       const numberOutputs = source.length > 0
         ? ((item: N8nItem) => (${ExpressionParser.parse(params.numberOutputs ?? 4, 'firstInputItem')}))(source[0])

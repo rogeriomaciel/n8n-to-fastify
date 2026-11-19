@@ -2,6 +2,7 @@ import type { ParsedWorkflow } from './core-parser';
 import { getDisabledNodeMode } from './disabled-node';
 import { getPositionMergeIssue, isPositionMerge } from './mappers/position-merge';
 import { getLegacyNodeReferenceIssue } from './mappers/code-context';
+import { continuesSwitchOnRegularOutput } from './mappers/switch-errors';
 import { continuesCodeOnRegularOutput } from './mappers/code-errors';
 import { getRawEditFieldsIssue } from './mappers/raw-edit-fields';
 import { getRabbitMqPublisherIssue, rabbitMqPublisherType } from './mappers/rabbitmq';
@@ -72,7 +73,8 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     if (node.continueOnFail) {
       report(node.name, 'legacy continueOnFail is ignored');
     }
-    if (node.onError && node.onError !== 'stopWorkflow' && !continuesCodeOnRegularOutput(node)) {
+    if (node.onError && node.onError !== 'stopWorkflow' &&
+        !continuesCodeOnRegularOutput(node) && !continuesSwitchOnRegularOutput(node)) {
       report(node.name, 'the configured onError behavior is ignored');
     }
     if (node.type === rabbitMqPublisherType) {

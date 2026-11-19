@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -530,6 +530,18 @@
       }
     }
     return [...upstream];
+  }
+
+  // src/compiler/mappers/switch-errors.ts
+  function continuesSwitchOnRegularOutput(node) {
+    const params = node.parameters;
+    const rules = params?.rules?.values;
+    return node.type === "n8n-nodes-base.switch" && node.typeVersion === 3.2 && node.onError === "continueRegularOutput" && (params?.mode ?? "rules") === "rules" && (params?.options?.allMatchingOutputs ?? false) === false && Array.isArray(rules) && rules.length > 0 && rules.every((rule) => {
+      const group = rule?.conditions;
+      const conditions = group?.conditions;
+      const operator = conditions?.[0]?.operator;
+      return group?.options?.typeValidation === "strict" && group.options.version === 2 && Array.isArray(conditions) && conditions.length === 1 && operator?.type === "boolean" && (operator.operation === "true" || operator.operation === "false");
+    });
   }
 
   // src/compiler/mappers/code-errors.ts
@@ -1183,10 +1195,22 @@ ${legacyBinding}${execution}
           send(item, ${fallbackPort});
           matched = true;
         }` : "";
-      const predicates = rules.map((rule) => `(item: N8nItem) => (${rule.conditions ? this.parseConditions(rule.conditions) : "false"})`);
-      const matchRules = `
-      const predicates = [${predicates.join(", ")}];
-      for (const item of source) {
+      const continueErrors = continuesSwitchOnRegularOutput(ctx.node);
+      const predicates = rules.map((rule) => {
+        if (!continueErrors) {
+          return `(item: N8nItem) => (${rule.conditions ? this.parseConditions(rule.conditions) : "false"})`;
+        }
+        const [condition] = rule.conditions.conditions;
+        const value = condition.leftValue === null ? "null" : ExpressionParser.parse(condition.leftValue, "firstInputItem");
+        return `(item: N8nItem) => {
+        const value = ${value};
+        if (value != null && typeof value !== 'boolean') {
+          throw new Error('Switch expected a boolean condition value');
+        }
+        return (value ?? false) === ${condition.operator.operation};
+      }`;
+      });
+      const routeRules = `
         let matched = false;
         for (const [port, matches] of predicates.entries()) {
           if (matches(item)) {
@@ -1196,8 +1220,27 @@ ${legacyBinding}${execution}
           }
         }
         ${fallbackCode}
-        if (matched) routed.push(item);
-      }`;
+        if (matched) routed.push(item);`;
+      const matchRules = `
+      const predicates = [${predicates.join(", ")}];
+      ${continueErrors ? `for (const [index, input] of source.entries()) {
+        try {
+          const item = { ...input, pairedItem: { item: index } };
+          ${routeRules}
+        } catch (error) {
+          const item: N8nItem = { json: { error: error instanceof Error ? error.message : String(error) } };
+          if (source.length === 1) item.pairedItem = { item: 0 };
+          send(item, 0);
+          routed.push(item);
+        }
+      }
+      ${rules.length === 1 && fallback !== "extra" ? `
+      const output = outputs.get(0);
+      if (output?.length === source.length) {
+        output.forEach((item, index) => { item.pairedItem ??= { item: index }; });
+      }` : ""}` : `for (const item of source) {
+        ${routeRules}
+      }`}`;
       const matchExpression = `
       const numberOutputs = source.length > 0
         ? ((item: N8nItem) => (${ExpressionParser.parse(params.numberOutputs ?? 4, "firstInputItem")}))(source[0])
@@ -1473,8 +1516,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
