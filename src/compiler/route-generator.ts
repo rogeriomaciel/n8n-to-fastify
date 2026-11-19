@@ -5,6 +5,7 @@ import { s3NodeType } from './mappers/s3';
 import { compressionNodeType } from './mappers/compression';
 import { convertToFileType } from './mappers/convert-to-file';
 import { getRabbitMqTriggers, parseRabbitMqTrigger } from './rabbitmq-trigger';
+import { getPostgresTriggers, parsePostgresTrigger } from './postgres-trigger';
 
 export class RouteGenerator {
   /**
@@ -28,7 +29,9 @@ import { WorkflowContext } from '../runtime/workflow-context';
     });
 
     let routeDefinitions = '';
-    const rabbitMqStarts: string[] = [];
+    const listenerStarts: string[] = [];
+    const needsRabbitMq = workflows.some(workflow => getRabbitMqTriggers(workflow).length > 0);
+    const needsPostgres = workflows.some(workflow => getPostgresTriggers(workflow).length > 0);
     const registeredRoutes = new Set<string>();
 
     workflows.forEach((wf) => {
@@ -41,7 +44,20 @@ import { WorkflowContext } from '../runtime/workflow-context';
           throw new Error(`Workflow ${JSON.stringify(wf.name)}, node ${JSON.stringify(node.name)}: ${options}`);
         }
         const logContext = JSON.stringify({ workflowId: wf.id, node: node.name });
-        rabbitMqStarts.push(`      stopConsumers.push(await startRabbitMqConsumer(
+        listenerStarts.push(`      stopListeners.push(await startRabbitMqConsumer(
+        ${JSON.stringify(options)},
+        (items) => ${functionName}(items, undefined, ${JSON.stringify(node.name)}),
+        (message) => fastify.log.error(${logContext}, message),
+      ));`);
+      }
+
+      for (const node of getPostgresTriggers(wf)) {
+        const options = parsePostgresTrigger(node);
+        if (typeof options === 'string') {
+          throw new Error(`Workflow ${JSON.stringify(wf.name)}, node ${JSON.stringify(node.name)}: ${options}`);
+        }
+        const logContext = JSON.stringify({ workflowId: wf.id, node: node.name });
+        listenerStarts.push(`      stopListeners.push(await startPostgresTrigger(
         ${JSON.stringify(options)},
         (items) => ${functionName}(items, undefined, ${JSON.stringify(node.name)}),
         (message) => fastify.log.error(${logContext}, message),
@@ -110,22 +126,27 @@ import { WorkflowContext } from '../runtime/workflow-context';
       });
     });
 
-    if (rabbitMqStarts.length > 0) {
+    if (needsRabbitMq) {
       imports += "import { startRabbitMqConsumer } from '../runtime/rabbitmq';\n";
+    }
+    if (needsPostgres) {
+      imports += "import { startPostgresTrigger } from '../runtime/postgres-trigger';\n";
+    }
+    if (listenerStarts.length > 0) {
       routeDefinitions += `
-  const stopConsumers: Array<() => Promise<void>> = [];
-  const closeConsumers = async () => {
-    await Promise.allSettled(stopConsumers.splice(0).map(stop => stop()));
+  const stopListeners: Array<() => Promise<void>> = [];
+  const closeListeners = async () => {
+    await Promise.allSettled(stopListeners.splice(0).map(stop => stop()));
   };
   fastify.addHook('onReady', async () => {
     try {
-${rabbitMqStarts.join('\n')}
+${listenerStarts.join('\n')}
     } catch (error) {
-      await closeConsumers();
+      await closeListeners();
       throw error;
     }
   });
-  fastify.addHook('onClose', closeConsumers);
+  fastify.addHook('onClose', closeListeners);
 `;
     }
 
@@ -144,7 +165,8 @@ ${routeDefinitions}
    * Generates the standalone server.ts entry point.
    */
   static generateServerEntry(workflows: ParsedWorkflow[] = []): string {
-    const shutdown = workflows.some(workflow => getRabbitMqTriggers(workflow).length > 0)
+    const shutdown = workflows.some(workflow =>
+      getRabbitMqTriggers(workflow).length > 0 || getPostgresTriggers(workflow).length > 0)
       ? `
   const close = () => {
     void fastify.close().catch(error => {
@@ -199,6 +221,7 @@ try {
       getRabbitMqTriggers(workflow).length > 0 ||
       workflow.nodes.some((node) => node.type === rabbitMqPublisherType)
     );
+    const needsPostgres = workflows.some(workflow => getPostgresTriggers(workflow).length > 0);
     const needsS3 = workflows.some(workflow => workflow.nodes.some(node => node.type === s3NodeType));
     const needsCompression = workflows.some(workflow => workflow.nodes.some(node => node.type === compressionNodeType));
     const needsMimeTypes = needsS3 || needsCompression ||
@@ -216,6 +239,7 @@ try {
           '@fastify/cors': '^9.0.1',
           fastify: '^4.28.1',
           ...(needsRabbitMq ? { amqplib: '^0.10.9' } : {}),
+          ...(needsPostgres ? { pg: '8.16.3' } : {}),
           ...(needsS3 ? { '@aws-sdk/client-s3': '3.808.0' } : {}),
           ...(needsMimeTypes ? { 'mime-types': '^3.0.1' } : {}),
           ...(needsCompression ? { fflate: '0.8.3' } : {}),

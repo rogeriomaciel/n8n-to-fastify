@@ -1,4 +1,5 @@
 import { rabbitMqTriggerType } from './rabbitmq-trigger';
+import { postgresTriggerType } from './postgres-trigger';
 import { findPollingLoops, projectPollingSchedule, type PollingLoop } from './polling-loops';
 
 export interface N8nNode {
@@ -83,6 +84,7 @@ export class CoreWorkflowParser {
     const triggers = nodes.filter(
       (node) =>
         node.type === rabbitMqTriggerType ||
+        node.type === postgresTriggerType ||
         node.type.includes('webhook') ||
         node.type.includes('trigger') ||
         node.type.includes('cron')

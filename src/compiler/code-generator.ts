@@ -1,4 +1,5 @@
 import { N8nNode, ParsedWorkflow } from './parser';
+import { postgresTriggerType } from './postgres-trigger';
 import { NodeMappers } from './mappers';
 import { emitPollingLoop } from './polling-code';
 import { getDisabledNodeMode } from './disabled-node';
@@ -90,7 +91,9 @@ const DateTime = {
     });
 
     const triggers = wf.triggers;
-    const hasRabbitMqTrigger = triggers.some(node => node.type === rabbitMqTriggerType);
+    const hasEventTrigger = triggers.some(node =>
+      node.type === rabbitMqTriggerType || (node.type === postgresTriggerType && !node.disabled)
+    );
     const disabledModes = new Map(wf.orderedNodes.map(node => [node, getDisabledNodeMode(node, wf)]));
     const nonTriggers = wf.orderedNodes.filter((n) => !triggers.includes(n) && disabledModes.get(n) !== 'skip');
     const loops = wf.pollingLoops ?? [];
@@ -113,13 +116,14 @@ const DateTime = {
     };
 
     triggers.forEach((node) => {
+      if (node.type === postgresTriggerType && node.disabled) return;
       const index = wf.orderedNodes.indexOf(node);
       const varName = nodeVarMap.get(node.name)!;
       declCode += `  let ${varName}: any = inputItems;\n`;
 
       const nodeName = JSON.stringify(node.name);
       let condition = `entryNode === ${nodeName}`;
-      if (node.type !== rabbitMqTriggerType) {
+      if (node.type !== rabbitMqTriggerType && node.type !== postgresTriggerType) {
         const rawNodePath = (node.parameters?.path || node.name).toLowerCase().trim().replace(/^\/+/, '');
         bodyCode += `  const triggerNode_${index} = item?.json?.__triggerNode;\n`;
         bodyCode += `  const triggerPath_${index} = item?.json?.__triggerPath;\n`;
@@ -174,7 +178,7 @@ ${nodeCode.trim()}
           .map((t) => `ctx.hasExecutedNode(${JSON.stringify(t)})`)
           .join(' || ');
         branchCheckStr = `(${triggerConditions}) && ${branchCheckStr}`;
-      } else if (hasRabbitMqTrigger) {
+      } else if (hasEventTrigger) {
         branchCheckStr = `entryNode === undefined && ${branchCheckStr}`;
       }
       bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode,

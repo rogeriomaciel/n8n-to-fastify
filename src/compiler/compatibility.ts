@@ -12,12 +12,14 @@ import { getMultipartIssue, usesMultipartBody } from './mappers/http-request';
 import { getWaitIntervalIssue, waitNodeType } from './mappers/wait-interval';
 import { getStopAndErrorIssue, stopAndErrorType } from './mappers/stop-and-error';
 import { parseRabbitMqTrigger, rabbitMqTriggerType } from './rabbitmq-trigger';
+import { parsePostgresTrigger, postgresTriggerType } from './postgres-trigger';
 
 const supportedNodeTypes = new Set([
   compressionNodeType,
   convertToFileType,
   rabbitMqPublisherType,
   rabbitMqTriggerType,
+  postgresTriggerType,
   s3NodeType,
   stopAndErrorType,
   ...[
@@ -60,7 +62,7 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
 
   for (const node of workflow.nodes) {
     if (node.type === 'n8n-nodes-base.stickyNote') continue;
-    if (node.type === rabbitMqTriggerType && node.disabled) continue;
+    if ((node.type === rabbitMqTriggerType || node.type === postgresTriggerType) && node.disabled) continue;
     if (node.disabled) {
       if (!getDisabledNodeMode(node, workflow)) report(node.name, 'disabled node configuration is unsupported');
       continue;
@@ -106,6 +108,10 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     if (node.type === s3NodeType) {
       const issue = getS3DownloadIssue(node);
       if (issue) report(node.name, issue);
+    }
+    if (node.type === postgresTriggerType) {
+      const options = parsePostgresTrigger(node);
+      if (typeof options === 'string') report(node.name, options);
     }
     if (node.type === 'n8n-nodes-base.httpRequest') {
       if (usesMultipartBody(params)) {

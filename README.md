@@ -108,6 +108,7 @@ Place a `.env` file in the generated service directory and run `bun run start` f
 | **Split Out** | Expands nested arrays into individual `N8nItem[]` items |
 | **Merge** | Appends branches or combines items by position across up to ten destination ports |
 | **PostgreSQL** | Parameterized SQL execution via `DATABASE_URL` |
+| **Postgres Trigger** | Start a workflow from notifications on an existing channel (`POSTGRES_TRIGGER_URL`) |
 | **RabbitMQ** | Publish messages to an existing exchange (`RABBITMQ_URL`) |
 | **RabbitMQ Trigger** | Consume a queue and acknowledge delivery after successful execution |
 | **S3** | Downloads files into binary items from an S3-compatible endpoint |
@@ -207,6 +208,12 @@ The publisher evaluates the exchange and routing key using the first input item,
 The compiler supports RabbitMQ Trigger v1 with `executionFinishesSuccessfully` using the same `RABBITMQ_URL`. The generated service checks (or optionally declares via `assertQueue`) and binds the queue, limits unacknowledged deliveries with `parallelMessages`, and skips disabled triggers.
 
 Each delivery triggers the branch with message fields, properties, and text (or parsed JSON when `jsonParseBody` is enabled), acknowledging after success, requeuing on failure, and draining in-flight executions on `SIGINT`/`SIGTERM`.
+
+## Postgres Trigger
+
+The compiler supports Postgres Trigger v1 in **Listen to Channel** mode with a static unquoted channel name. Set `POSTGRES_TRIGGER_URL` to a PostgreSQL connection URL at runtime. The generated service installs `pg` and opens a dedicated session for each enabled listener. Its notification envelope carries the channel, sender PID and payload. Valid JSON payloads are decoded and other payloads remain text.
+
+The listener reconnects after a dropped session. PostgreSQL delivers notifications only to currently listening sessions. When stopping, the service closes the listener and waits for workflows that already started.
 
 ---
 
