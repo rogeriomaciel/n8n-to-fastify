@@ -456,7 +456,7 @@ ${legacyBinding}${execution}
       bodySnippet = generateMultipartBody(params);
     } else if (['POST', 'PUT', 'PATCH'].includes(method)) {
       if (params.jsonBody) {
-        bodySnippet = `JSON.stringify(${ExpressionParser.parse(params.jsonBody)})`;
+        bodySnippet = `encodeJsonRequestBody(${ExpressionParser.parse(params.jsonBody)})`;
       } else if (params.bodyParameters?.parameters && Array.isArray(params.bodyParameters.parameters)) {
         const pairs = params.bodyParameters.parameters
           .filter((p: any) => p.name)

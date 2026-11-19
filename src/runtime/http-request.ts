@@ -24,6 +24,16 @@ export function parseRequestHeaders(input: unknown): Headers {
   }
 }
 
+export function encodeJsonRequestBody(input: unknown): string {
+  try {
+    const body = JSON.stringify(typeof input === 'string' ? JSON.parse(input) : input);
+    if (body !== undefined) return body;
+  } catch {
+    // The original error may include request data.
+  }
+  throw new Error('HTTP Request JSON body must be valid JSON');
+}
+
 export function createRequestForm(item: N8nItem, parts: RequestFormPart[]): FormData {
   const form = new FormData();
   for (const part of parts) {
