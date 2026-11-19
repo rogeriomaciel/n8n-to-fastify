@@ -27,6 +27,18 @@ export const n8n = {
     return [{ json: typeof data === 'object' && data !== null ? data : { value: data } }];
   },
 
+  coerceNumberField(value: unknown, ignoreErrors: boolean): unknown {
+    if (value === null || value === undefined) return null;
+    try {
+      const parsed = Number(value);
+      if (!Number.isNaN(parsed)) return parsed;
+    } catch {
+      // JSON objects can shadow conversion methods and make Number() throw.
+    }
+    if (ignoreErrors) return value;
+    throw new Error('Edit Fields expected a number');
+  },
+
   /**
    * Safely sets a nested property using dot notation (used by Set / Edit Fields).
    */
