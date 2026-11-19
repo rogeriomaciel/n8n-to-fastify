@@ -23,6 +23,7 @@ export class WorkflowContext {
   private nodeOutputs = new Map<string, N8nItem[]>();
   private outputPorts = new Map<string, Map<number, N8nItem[]>>();
   private outputBatches = new Map<string, Map<number, N8nItem[][]>>();
+  private nodeRuns = new Map<string, Array<Map<number, N8nItem[]>>>();
   private activeBranches = new Map<string, Set<number>>();
   private executedNodes = new Set<string>();
   private readonly trace?: WorkflowTrace;
@@ -44,6 +45,11 @@ export class WorkflowContext {
   }
 
   public setNodeOutput(nodeName: string, items: N8nItem[], activeOutputIndex: number = 0): void {
+    this.writeNodeOutput(nodeName, items, activeOutputIndex);
+    this.recordNodeRun(nodeName, new Map([[activeOutputIndex, items]]));
+  }
+
+  private writeNodeOutput(nodeName: string, items: N8nItem[], activeOutputIndex: number): void {
     this.outputPorts.delete(nodeName);
     this.outputBatches.delete(nodeName);
     this.nodeOutputs.set(nodeName, items);
@@ -53,12 +59,28 @@ export class WorkflowContext {
   }
 
   public setNodeOutputs(nodeName: string, outputs: Iterable<[number, N8nItem[]]>, items: N8nItem[]): void {
+    const ports = new Map(outputs);
+    this.writeNodeOutputs(nodeName, ports, items);
+    this.recordNodeRun(nodeName, ports);
+  }
+
+  private recordNodeRun(nodeName: string, outputs: Map<number, N8nItem[]>): void {
+    let runs = this.nodeRuns.get(nodeName);
+    if (!runs) {
+      runs = [];
+      this.nodeRuns.set(nodeName, runs);
+    }
+    // Keep one entry per execution, even when a port produces no items.
+    runs.push(outputs);
+  }
+
+  private writeNodeOutputs(nodeName: string, outputs: Iterable<[number, N8nItem[]]>, items: N8nItem[]): void {
     this.activeBranches.delete(nodeName);
     this.outputBatches.delete(nodeName);
     const ports = new Map<number, N8nItem[]>();
     for (const [port, output] of outputs) {
       if (output.length > 0) {
-        this.setNodeOutput(nodeName, output, port);
+        this.writeNodeOutput(nodeName, output, port);
         ports.set(port, output);
       }
     }
@@ -78,6 +100,15 @@ export class WorkflowContext {
     if (batches) return batches;
     const items = this.getNodeOutput(nodeName, outputIndex);
     return items === undefined ? [] : [items];
+  }
+
+  public getNodeRunItems(nodeName: string, outputIndex: number, runIndex: number): N8nItem[] {
+    const runs = this.nodeRuns.get(nodeName);
+    if (!runs) throw new Error('Referenced node has not executed');
+    if (!Number.isInteger(runIndex) || runIndex < -1) throw new Error('Invalid referenced node run index');
+    const run = runs.at(runIndex);
+    if (!run) throw new Error('Referenced node run does not exist');
+    return run.get(outputIndex) ?? [];
   }
 
   public async runNodeBatches(
@@ -160,7 +191,8 @@ export class WorkflowContext {
   }
 
   private setBatchedOutputs(nodeName: string, byPort: Map<number, N8nItem[][]>, all: N8nItem[][]): void {
-    this.setNodeOutputs(nodeName, [...byPort].map(([port, runs]) => [port, runs.flat()]), all.flat());
+    // Combining batches for propagation does not execute the node again.
+    this.writeNodeOutputs(nodeName, [...byPort].map(([port, runs]) => [port, runs.flat()]), all.flat());
     this.outputBatches.set(nodeName, byPort);
   }
 
