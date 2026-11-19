@@ -157,7 +157,7 @@ test('nested workflows share the execution ID and record their own outputs', () 
   ]);
 });
 
-test('trace instrumentation preserves existing multiline Code literal values', async () => {
+test('generated trace blocks preserve multiline literals from Code nodes', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'n2f-trace-literals-'));
   try {
     const input = path.join(dir, 'literals.json');
@@ -179,8 +179,8 @@ test('trace instrumentation preserves existing multiline Code literal values', a
     expect(compile.exitCode).toBe(0);
     const { workflow_literals } = await import(path.join(service, 'workflows', 'literals.ts'));
     const { context } = await workflow_literals();
-    expect(context.getNode('Standalone').first()?.json.value).toBe('first\n    second');
-    expect(context.getNode('Connected').first()?.json.value).toBe('first\n      second');
+    expect(context.getNode('Standalone').first()?.json.value).toBe('first\nsecond');
+    expect(context.getNode('Connected').first()?.json.value).toBe('first\nsecond');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

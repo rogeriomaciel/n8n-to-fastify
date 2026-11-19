@@ -177,8 +177,7 @@ ${nodeCode.trim()}
       } else if (hasRabbitMqTrigger) {
         branchCheckStr = `entryNode === undefined && ${branchCheckStr}`;
       }
-      bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode,
-        ancestorTriggers.length > 0 ? '      ' : '    ');
+      bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode);
     });
 
     const lastNodeName = wf.orderedNodes
@@ -213,15 +212,14 @@ registerWorkflow(${JSON.stringify(keys)}, ${functionName});
     node: N8nNode,
     condition: string,
     nodeCode: string,
-    nodeIndent = '    ',
   ): string {
     const traceArgs = [workflowId, node.id || node.name, node.name].map(value => JSON.stringify(value)).join(', ');
-    // Keep the previous indentation because it also affects multiline JavaScript literals.
-    const body = nodeIndent + nodeCode.trim().replace(/\n/g, `\n${nodeIndent}`);
+    // Prefix the block without changing whitespace inside multiline JavaScript literals.
+    const body = nodeCode.trim();
     return `  if (${condition}) {
     const finishTrace = ctx.startNodeTrace(${traceArgs});
     try {
-${body}
+      ${body}
     } catch (error) {
       finishTrace?.('error');
       throw error;

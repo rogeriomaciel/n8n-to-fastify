@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -1473,8 +1473,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1620,7 +1620,7 @@ ${nodeCode.trim()}
         } else if (hasRabbitMqTrigger) {
           branchCheckStr = `entryNode === undefined && ${branchCheckStr}`;
         }
-        bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode, ancestorTriggers.length > 0 ? "      " : "    ");
+        bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode);
       });
       const lastNodeName = wf.orderedNodes.filter((node) => disabledModes.get(node) !== "skip" && (node.type !== stopAndErrorType || node.disabled)).at(-1)?.name;
       const returnItemsExpr = lastNodeName ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])` : `inputItems`;
@@ -1642,14 +1642,13 @@ ${bodyCode}
 registerWorkflow(${JSON.stringify(keys)}, ${functionName});
 `;
     }
-    static generateNodeBlock(workflowId, node, condition, nodeCode, nodeIndent = "    ") {
+    static generateNodeBlock(workflowId, node, condition, nodeCode) {
       const traceArgs = [workflowId, node.id || node.name, node.name].map((value) => JSON.stringify(value)).join(", ");
-      const body = nodeIndent + nodeCode.trim().replace(/\n/g, `
-${nodeIndent}`);
+      const body = nodeCode.trim();
       return `  if (${condition}) {
     const finishTrace = ctx.startNodeTrace(${traceArgs});
     try {
-${body}
+      ${body}
     } catch (error) {
       finishTrace?.('error');
       throw error;
