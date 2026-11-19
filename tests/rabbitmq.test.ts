@@ -61,19 +61,32 @@ test('generated RabbitMQ 1.1 publisher sends one JSON message per item and waits
     const env = { ...process.env, RABBITMQ_URL: 'amqp://localhost', TEST_NACK: '' };
     const success = Bun.spawnSync(command, { cwd: service, env });
     expect(success.exitCode).toBe(0);
-    expect(success.stdout.toString().trim().split('\n')).toEqual([
+    const expectedOutput = [
       'checked events',
       '{"exchange":"events","key":"one","body":{"key":"one"}}',
       '{"exchange":"events","key":"one","body":{"key":"two"}}',
       'connection closed',
       '[{"json":{"success":true}},{"json":{"success":false}}]',
-    ]);
+    ];
+    expect(success.stdout.toString().trim().split('\n')).toEqual(expectedOutput);
 
     const failure = Bun.spawnSync(command, { cwd: service, env: { ...env, TEST_NACK: '1' } });
     expect(failure.exitCode).toBe(1);
     expect(failure.stderr.toString()).toContain('nack');
     expect(failure.stdout.toString()).toContain('connection closed');
     expect(failure.stdout.toString()).not.toContain('"two"');
+
+    const executable = path.join(dir, process.platform === 'win32' ? 'verify.exe' : 'verify');
+    const build = Bun.spawnSync([process.execPath, 'build', '--compile', 'verify.ts', '--outfile', executable], {
+      cwd: service,
+    });
+    expect(build.stderr.toString()).toBe('');
+    expect(build.exitCode).toBe(0);
+    fs.renameSync(path.join(service, 'node_modules'), path.join(service, 'unused-dependencies'));
+    const standalone = Bun.spawnSync([executable], { cwd: dir, env });
+    expect(standalone.stderr.toString()).toBe('');
+    expect(standalone.exitCode).toBe(0);
+    expect(standalone.stdout.toString().trim().split('\n')).toEqual(expectedOutput);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

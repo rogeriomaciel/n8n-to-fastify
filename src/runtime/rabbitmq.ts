@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import type { N8nItem } from './n8n-helper';
 
 interface ConfirmChannel {
@@ -25,7 +24,8 @@ async function connectRabbitMq(): Promise<AmqpConnection> {
   if (!url) throw new Error('RABBITMQ_URL is required for RabbitMQ nodes');
 
   // Only generated services with RabbitMQ nodes install this package.
-  const { connect } = createRequire(import.meta.url)('amqplib') as {
+  // Keep the specifier literal so Bun can include it in a standalone executable.
+  const { connect } = await import('amqplib' as string) as {
     connect(url: string): Promise<AmqpConnection>;
   };
   const connection = await connect(url);
