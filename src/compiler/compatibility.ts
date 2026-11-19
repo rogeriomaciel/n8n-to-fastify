@@ -1,3 +1,4 @@
+import jsTokens from 'js-tokens';
 import type { ParsedWorkflow } from './core-parser';
 import { getDisabledNodeMode } from './disabled-node';
 import { getPositionMergeIssue, isPositionMerge } from './mappers/position-merge';
@@ -12,6 +13,21 @@ import { getMultipartIssue, usesMultipartBody } from './mappers/http-request';
 import { getWaitIntervalIssue, waitNodeType } from './mappers/wait-interval';
 import { getStopAndErrorIssue, stopAndErrorType } from './mappers/stop-and-error';
 import { parseRabbitMqTrigger, rabbitMqTriggerType } from './rabbitmq-trigger';
+
+const trivia = new Set(['WhiteSpace', 'LineTerminatorSequence', 'SingleLineComment', 'MultiLineComment']);
+
+function usesItemMatchingLookup(code: string): boolean {
+  const tokens = [...jsTokens(code)].filter(token => !trivia.has(token.type));
+  return tokens.some((token, i) =>
+    token.type === 'IdentifierName' && token.value === '$'
+    && tokens[i + 1]?.value === '('
+    && tokens[i + 2]?.type === 'StringLiteral'
+    && tokens[i + 3]?.value === ')'
+    && tokens[i + 4]?.value === '.'
+    && tokens[i + 5]?.value === 'itemMatching'
+    && tokens[i + 6]?.value === '('
+  );
+}
 
 const supportedNodeTypes = new Set([
   compressionNodeType,
@@ -87,6 +103,10 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
     const params = node.parameters ?? {};
     const codeIssue = getLegacyNodeReferenceIssue(node);
     if (codeIssue) report(node.name, codeIssue);
+    const code = params.jsCode ?? params.functionCode;
+    if (typeof code === 'string' && usesItemMatchingLookup(code)) {
+      report(node.name, 'Code itemMatching requires linked-item lookup, which is unsupported');
+    }
     if (node.type === waitNodeType) {
       const issue = getWaitIntervalIssue(node);
       if (issue) report(node.name, issue);
