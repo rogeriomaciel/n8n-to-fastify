@@ -1,3 +1,31 @@
+import jsTokens from 'js-tokens';
+
+function rewriteBinaryReferences(code: string): string {
+  if (!code.includes('$binary')) return code;
+  const tokens = [...jsTokens(code)];
+  const significant = tokens.filter(token => !['WhiteSpace', 'LineTerminatorSequence',
+    'SingleLineComment', 'MultiLineComment', 'HashbangComment'].includes(token.type));
+
+  // Literal text is emitted verbatim, including the text surrounding a template substitution.
+  for (const [index, token] of significant.entries()) {
+    if (token.type !== 'IdentifierName' || token.value !== '$binary') continue;
+    const previous = significant[index - 1]?.value;
+    const next = significant[index + 1]?.value;
+    if (previous === '.' || previous === '?.') continue;
+    const objectEntry = previous === '{' || previous === ',';
+    if (objectEntry && next === ':') continue;
+
+    token.value = objectEntry && (next === ',' || next === '}') ? '$binary: item?.binary' : 'item?.binary';
+    let accessor = index + 1;
+    while (significant[accessor]?.value === '.' && significant[accessor + 1]?.type === 'IdentifierName') {
+      significant[accessor].value = '?.';
+      accessor += 2;
+    }
+    if (significant[accessor]?.value === '[') significant[accessor].value = '?.[';
+  }
+  return tokens.map(token => token.value).join('');
+}
+
 /**
  * Expression Parser
  * Transpiles n8n expressions (e.g., `={{ $json.user.id }}` or `={{ $('NodeName').item.json.token }}`)
@@ -81,6 +109,8 @@ export class ExpressionParser {
       const parts = path.split('.').filter(Boolean);
       return `item?.json?.${parts.join('?.')}`;
     });
+
+    result = rewriteBinaryReferences(result);
 
     result = result.replace(/\$input\.first\(\)\.json/g, `${firstInputItem ?? 'item'}?.json`);
     if (firstInputItem) result = result.replace(/\$input\.first\(\)/g, firstInputItem);

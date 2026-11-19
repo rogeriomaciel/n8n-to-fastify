@@ -54,6 +54,12 @@ describe('ExpressionParser', () => {
   test('preserves static strings cleanly', () => {
     expect(ExpressionParser.parse('hello world')).toBe('"hello world"');
   });
+
+  test('keeps binary text inside named-node references and regex literals', () => {
+    expect(ExpressionParser.parse('={{ $("Source $binary").first().json.value }}')).toContain('"Source $binary"');
+    const regex = '/\\$binary/.test("$binary")';
+    expect(ExpressionParser.parse('={{ ' + regex + ' }}')).toBe('(' + regex + ')');
+  });
 });
 
 describe('End-to-End Compilation & Subworkflow Execution', () => {
