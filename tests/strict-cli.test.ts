@@ -24,7 +24,7 @@ test('strict compile reports known incompatibilities before writing output', () 
         {
           name: 'Request',
           type: 'n8n-nodes-base.httpRequest',
-          onError: 'continueRegularOutput',
+          onError: 'continueErrorOutput',
           parameters: {
             sendBody: true, contentType: 'raw',
             sendHeaders: true, specifyHeaders: 'json',

@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -852,6 +852,9 @@
   }
 
   // src/compiler/mappers/http-request.ts
+  function continuesHttpOnRegularOutput(node) {
+    return node.type === "n8n-nodes-base.httpRequest" && node.onError === "continueRegularOutput";
+  }
   function usesMultipartBody(params) {
     return params?.sendBody === true && params.contentType === "multipart-form-data";
   }
@@ -1270,14 +1273,18 @@ ${legacyBinding}${execution}
         headersSnippet = `const reqHeaders = ${headersObj};
       if (!reqHeaders.has('content-type')) reqHeaders.set('content-type', 'application/json');`;
       }
+      const continues = continuesHttpOnRegularOutput(ctx.node);
+      const neverError = ExpressionParser.parse(params.options?.response?.response?.neverError ?? false, "batch[0]", "batch");
+      const collectItems = continues ? "settleHttpItems" : "Promise.all";
+      const fetchStart = continues ? `fetchForRegularOutput(targetUrl, Boolean(${neverError}), {` : "fetch(targetUrl, {";
       return `
     // [Node: ${ctx.node.name}] Native HTTP Request (${method})
-    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
+    ${ctx.variableName} = await ${collectItems}((${prevVar} || inputItems).map(async (currentItem: N8nItem, _index: number, batch: N8nItem[]) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
       ${headersSnippet}
       const reqBody = ${bodySnippet};
-      const res = await fetch(targetUrl, {
+      const res = await ${fetchStart}
         method: ${JSON.stringify(method)},
         headers: reqHeaders,
         ...(reqBody !== undefined ? { body: reqBody } : {})
@@ -1473,8 +1480,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1501,6 +1508,8 @@ ${legacyBinding}${execution}
       const functionName = `workflow_${this.sanitizeIdentifier(wf.fileName)}`;
       const depth = (wf.relativePath.match(/\//g) || []).length;
       const runtimePrefix = "../".repeat(depth + 1) + "runtime";
+      const httpContinuationImport = wf.nodes.some((node) => !node.disabled && continuesHttpOnRegularOutput(node)) ? `import { fetchForRegularOutput, settleHttpItems } from '${runtimePrefix}/http-regular-output';
+` : "";
       const positionMergeImport = wf.nodes.some(isPositionMerge) ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';
 ` : "";
       const legacyNodes = new Set(wf.nodes.filter((node) => usesLegacyNodeReferences(node) || usesRawLegacyNodeReferences(node)));
@@ -1625,7 +1634,7 @@ ${nodeCode.trim()}
       const lastNodeName = wf.orderedNodes.filter((node) => disabledModes.get(node) !== "skip" && (node.type !== stopAndErrorType || node.disabled)).at(-1)?.name;
       const returnItemsExpr = lastNodeName ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])` : `inputItems`;
       const keys = Array.from(new Set([wf.id, wf.name, wf.fileName])).filter(Boolean);
-      return `${imports}
+      return `${httpContinuationImport}${imports}
 export async function ${functionName}(
   inputItems: N8nItem[] = [{ json: {} }],
   parentCtx?: WorkflowContext,

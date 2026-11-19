@@ -10,7 +10,7 @@ import { compressionNodeType, mapCompression } from './compression';
 import { convertToFileType, mapConvertToFile } from './convert-to-file';
 import { mapWaitInterval, waitNodeType } from './wait-interval';
 import { mapStopAndError, stopAndErrorType } from './stop-and-error';
-import { generateMultipartBody, getMultipartIssue, usesJsonHeaders, usesMultipartBody } from './http-request';
+import { continuesHttpOnRegularOutput, generateMultipartBody, getMultipartIssue, usesJsonHeaders, usesMultipartBody } from './http-request';
 
 export interface NodeMapperContext {
   node: N8nNode;
@@ -476,14 +476,18 @@ ${legacyBinding}${execution}
       if (!reqHeaders.has('content-type')) reqHeaders.set('content-type', 'application/json');`;
     }
 
+    const continues = continuesHttpOnRegularOutput(ctx.node);
+    const neverError = ExpressionParser.parse(params.options?.response?.response?.neverError ?? false, 'batch[0]', 'batch');
+    const collectItems = continues ? 'settleHttpItems' : 'Promise.all';
+    const fetchStart = continues ? `fetchForRegularOutput(targetUrl, Boolean(${neverError}), {` : 'fetch(targetUrl, {';
     return `
     // [Node: ${ctx.node.name}] Native HTTP Request (${method})
-    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
+    ${ctx.variableName} = await ${collectItems}((${prevVar} || inputItems).map(async (currentItem: N8nItem, _index: number, batch: N8nItem[]) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
       ${headersSnippet}
       const reqBody = ${bodySnippet};
-      const res = await fetch(targetUrl, {
+      const res = await ${fetchStart}
         method: ${JSON.stringify(method)},
         headers: reqHeaders,
         ...(reqBody !== undefined ? { body: reqBody } : {})
