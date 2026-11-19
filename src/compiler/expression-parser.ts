@@ -53,7 +53,7 @@ export class ExpressionParser {
   private static transformTokens(code: string, firstInputItem: string | undefined, inputItems: string): string {
     let result = code;
 
-    result = result.replace(/\$now\b/g, 'new Date().toISOString()');
+    result = result.replace(/\$now\b(?:\s*\.\s*toISO\s*\(\s*\))?/g, 'new Date().toISOString()');
     result = result.replace(/\$today\b/g, 'new Date().toISOString().split("T")[0]');
 
     // $('NodeName').item.json.path -> ctx.getNode("NodeName")?.item?.json?.path
