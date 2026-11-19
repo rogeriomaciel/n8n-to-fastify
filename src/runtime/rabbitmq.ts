@@ -87,9 +87,12 @@ interface ConsumerChannel {
   close(): Promise<void>;
 }
 
+export type RabbitMqAcknowledgement = 'immediately' | 'executionFinishes' | 'executionFinishesSuccessfully';
+
 export interface RabbitMqConsumerOptions {
   queue: string;
   bindings: Array<{ exchange: string; routingKey: string }>;
+  acknowledge?: RabbitMqAcknowledgement;
   prefetch?: number;
   parseJson: boolean;
   declareQueue?: QueueOptions;
@@ -101,6 +104,8 @@ export async function startRabbitMqConsumer(
   report: (message: string) => void,
 ): Promise<() => Promise<void>> {
   const connection = await connectRabbitMq();
+  // Older generated routes omit the option and use success-only acknowledgement.
+  const acknowledge = options.acknowledge ?? 'executionFinishesSuccessfully';
   const running = new Set<Promise<void>>();
   let stopping = false;
 
@@ -118,16 +123,38 @@ export async function startRabbitMqConsumer(
     if (options.prefetch !== undefined) await channel.prefetch(options.prefetch);
 
     async function handle(message: Delivery) {
+      if (acknowledge === 'immediately') channel.ack(message);
+
+      let content: unknown;
       try {
         const body = message.content.toString();
-        const content = options.parseJson ? JSON.parse(body) : body;
+        content = options.parseJson ? JSON.parse(body) : body;
+      } catch {
+        if (acknowledge === 'executionFinishesSuccessfully') {
+          channel.nack(message, false, true);
+          report('RabbitMQ workflow failed; message requeued');
+        } else {
+          // Completion mode also settles messages that fail before the workflow starts.
+          if (acknowledge === 'executionFinishes') channel.ack(message);
+          report('RabbitMQ message could not be decoded; message acknowledged');
+        }
+        return;
+      }
+
+      let failed = false;
+      try {
         await runWorkflow([{ json: { fields: message.fields, properties: message.properties, content } }]);
       } catch {
+        failed = true;
+      }
+
+      if (failed && acknowledge === 'executionFinishesSuccessfully') {
         channel.nack(message, false, true);
         report('RabbitMQ workflow failed; message requeued');
         return;
       }
-      channel.ack(message);
+      if (acknowledge !== 'immediately') channel.ack(message);
+      if (failed) report('RabbitMQ workflow failed; message acknowledged');
     }
 
     const { consumerTag } = await channel.consume(options.queue, message => {

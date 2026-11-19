@@ -19,15 +19,39 @@ test('RabbitMQ Trigger accepts a queue declaration and rejects unsupported ackno
     },
   };
   expect(parseRabbitMqTrigger(node)).toMatchObject({
-    queue: 'jobs', declareQueue: { durable: false },
+    queue: 'jobs', declareQueue: { durable: false }, acknowledge: 'executionFinishesSuccessfully',
   });
   node.parameters.options.acknowledge = 'immediately';
+  expect(parseRabbitMqTrigger(node)).toMatchObject({ acknowledge: 'immediately' });
+  node.parameters.options.acknowledge = 'executionFinishes';
+  expect(parseRabbitMqTrigger(node)).toMatchObject({ acknowledge: 'executionFinishes' });
+  node.parameters.options.acknowledge = 'laterMessageNode';
   expect(parseRabbitMqTrigger(node)).toBe(
-    'RabbitMQ Trigger needs the executionFinishesSuccessfully acknowledgement mode',
+    'RabbitMQ Trigger supports immediately, executionFinishes, and executionFinishesSuccessfully acknowledgement',
   );
 });
 
-test('the generated RabbitMQ v1 trigger settles deliveries after execution and drains on close', async () => {
+const ack = ['ack', 'job'];
+const nackAndRequeue = ['nack', false, true];
+test.each([
+  {
+    mode: 'success-only', options: { acknowledge: 'executionFinishesSuccessfully', parallelMessages: 1 },
+    setup: [['check', 'jobs']], failureBefore: [], failureAfter: [nackAndRequeue],
+    successBefore: [], successAfter: [ack], prefetch: [['prefetch', 1]],
+  },
+  {
+    mode: 'implicit immediate', options: { assertQueue: true, durable: false },
+    setup: [['declare', 'jobs', { durable: false }]], failureBefore: [ack], failureAfter: [],
+    successBefore: [ack], successAfter: [], prefetch: [],
+  },
+  {
+    mode: 'implicit completion with prefetch', options: { parallelMessages: 1 },
+    setup: [['check', 'jobs']], failureBefore: [], failureAfter: [ack],
+    successBefore: [], successAfter: [ack], prefetch: [['prefetch', 1]],
+  },
+])('generated RabbitMQ Trigger settles and drains deliveries in $mode mode', async ({
+  options, setup, prefetch, failureBefore, failureAfter, successBefore, successAfter,
+}) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'n2f-rabbitmq-trigger-'));
   const service = path.join(dir, 'service');
   const fastify = Fastify();
@@ -42,8 +66,7 @@ test('the generated RabbitMQ v1 trigger settles deliveries after execution and d
           type: 'n8n-nodes-base.rabbitmqTrigger',
           typeVersion: 1,
           parameters: { queue: 'jobs', options: {
-            acknowledge: 'executionFinishesSuccessfully',
-            parallelMessages: 1,
+            ...options,
             jsonParseBody: true,
             binding: { bindings: [{ exchange: 'events', routingKey: 'job' }] },
           } },
@@ -83,8 +106,8 @@ test('the generated RabbitMQ v1 trigger settles deliveries after execution and d
     fs.writeFileSync(path.join(broker, 'index.cjs'), `
       const events = exports.events = [];
       let deliver;
-      exports.deliver = (content) => deliver({
-        content: Buffer.from(JSON.stringify(content)),
+      exports.deliver = (content, raw = false) => deliver({
+        content: Buffer.from(raw ? content : JSON.stringify(content)),
         fields: { routingKey: 'job' },
         properties: { contentType: 'application/json' },
       });
@@ -94,6 +117,7 @@ test('the generated RabbitMQ v1 trigger settles deliveries after execution and d
           return {
             on() {},
             async checkQueue(queue) { events.push(['check', queue]); },
+            async assertQueue(queue, options) { events.push(['declare', queue, options]); },
             async bindQueue(...args) { events.push(['bind', ...args]); },
             async prefetch(count) { events.push(['prefetch', count]); },
             async consume(queue, callback) {
@@ -121,32 +145,48 @@ test('the generated RabbitMQ v1 trigger settles deliveries after execution and d
     await fastify.register(routes.registerCompiledRoutes);
     await fastify.ready();
     expect(client.events).toEqual([
-      ['check', 'jobs'], ['bind', 'jobs', 'events', 'job'], ['prefetch', 1], ['consume', 'jobs'],
+      ...setup, ['bind', 'jobs', 'events', 'job'], ...prefetch, ['consume', 'jobs'],
     ]);
 
+    const malformedStart = client.events.length;
+    client.deliver('invalid JSON', true);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(client.events.slice(malformedStart)).toEqual([...failureBefore, ...failureAfter]);
+
+    const failureStart = client.events.length;
     client.deliver({ id: 'failure' });
     await new Promise(resolve => setImmediate(resolve));
-    expect(client.events.at(-1)).toEqual(['nack', false, true]);
+    expect(client.events.slice(failureStart)).toEqual([
+      ...failureBefore, ['execute', {
+        content: { id: 'failure' },
+        fields: { routingKey: 'job' },
+        properties: { contentType: 'application/json' },
+      }], ...failureAfter,
+    ]);
 
     const gate = new Promise<void>(resolve => { releaseWorkflow = resolve; });
     client.execute = async (json: unknown) => {
       client.events.push(['execute', json]);
       await gate;
     };
+    const successStart = client.events.length;
     client.deliver({ id: 'success' });
     await new Promise(resolve => setImmediate(resolve));
-    expect(client.events.at(-1)).toEqual(['execute', {
+    expect(client.events.slice(successStart)).toEqual([...successBefore, ['execute', {
       content: { id: 'success' },
       fields: { routingKey: 'job' },
       properties: { contentType: 'application/json' },
-    }]);
+    }]]);
 
+    const closeStart = client.events.length;
     const closing = fastify.close();
     await new Promise(resolve => setImmediate(resolve));
     expect(client.events.at(-1)).toEqual(['cancel', 'test-consumer']);
     releaseWorkflow!();
     await closing;
-    expect(client.events.slice(-3)).toEqual([['ack', 'job'], ['close channel'], ['close']]);
+    expect(client.events.slice(closeStart)).toEqual([
+      ['cancel', 'test-consumer'], ...successAfter, ['close channel'], ['close'],
+    ]);
   } finally {
     releaseWorkflow?.();
     await fastify.close().catch(() => {});

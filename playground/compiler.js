@@ -61,8 +61,9 @@
     if (typeof options !== "object" || Array.isArray(options)) {
       return "RabbitMQ Trigger needs static options";
     }
-    if (options.acknowledge !== "executionFinishesSuccessfully") {
-      return "RabbitMQ Trigger needs the executionFinishesSuccessfully acknowledgement mode";
+    const acknowledge = options.acknowledge ?? "immediately";
+    if (acknowledge !== "immediately" && acknowledge !== "executionFinishes" && acknowledge !== "executionFinishesSuccessfully") {
+      return "RabbitMQ Trigger supports immediately, executionFinishes, and executionFinishesSuccessfully acknowledgement";
     }
     if (options.contentIsBinary || options.onlyContent) {
       return "RabbitMQ Trigger supports text or parsed JSON in the message envelope";
@@ -86,6 +87,7 @@
     return {
       queue,
       bindings: bindings.map(({ exchange, routingKey }) => ({ exchange, routingKey })),
+      acknowledge: acknowledge === "immediately" && prefetch !== -1 ? "executionFinishes" : acknowledge,
       prefetch: prefetch === -1 ? undefined : prefetch,
       parseJson: options.jsonParseBody === true,
       declareQueue: options.assertQueue ? {
@@ -309,7 +311,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -1473,8 +1475,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)

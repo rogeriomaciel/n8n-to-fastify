@@ -109,7 +109,7 @@ Place a `.env` file in the generated service directory and run `bun run start` f
 | **Merge** | Appends branches or combines items by position across up to ten destination ports |
 | **PostgreSQL** | Parameterized SQL execution via `DATABASE_URL` |
 | **RabbitMQ** | Publish messages to an existing exchange (`RABBITMQ_URL`) |
-| **RabbitMQ Trigger** | Consume a queue and acknowledge delivery after successful execution |
+| **RabbitMQ Trigger** | Consume a queue and acknowledge on receipt, completion, or successful completion |
 | **S3** | Downloads files into binary items from an S3-compatible endpoint |
 | **Convert to File** | Converts all input items into a single UTF-8 JSON binary file |
 | **Compression** | Decompresses inline ZIP and GZIP binary fields with anti-Zip-Bomb & path-traversal limits |
@@ -204,9 +204,11 @@ The publisher evaluates the exchange and routing key using the first input item,
 
 ## 🐇 RabbitMQ Trigger
 
-The compiler supports RabbitMQ Trigger v1 with `executionFinishesSuccessfully` using the same `RABBITMQ_URL`. The generated service checks (or optionally declares via `assertQueue`) and binds the queue, limits unacknowledged deliveries with `parallelMessages`, and skips disabled triggers.
+The compiler supports RabbitMQ Trigger v1 using the same `RABBITMQ_URL`. The generated service checks (or optionally declares via `assertQueue`) and binds the queue, limits unacknowledged deliveries with `parallelMessages`, and skips disabled triggers.
 
-Each delivery triggers the branch with message fields, properties, and text (or parsed JSON when `jsonParseBody` is enabled), acknowledging after success, requeuing on failure, and draining in-flight executions on `SIGINT`/`SIGTERM`.
+The default `immediately` acknowledges when the message is received. When `parallelMessages` sets a finite limit, it defers acknowledgement until execution finishes, matching `executionFinishes`. The `executionFinishesSuccessfully` mode acknowledges after success and requeues on failure.
+
+Each delivery triggers the branch with message fields, properties, and text (or parsed JSON when `jsonParseBody` is enabled). The server drains in-flight executions on `SIGINT`/`SIGTERM`.
 
 ---
 
