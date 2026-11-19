@@ -1,5 +1,5 @@
 import { rabbitMqTriggerType } from './rabbitmq-trigger';
-import { findPollingLoops, projectPollingSchedule, type PollingLoop } from './polling-loops';
+import { findPollingLoops, projectPollingSchedule, type PollingLoopPlan } from './polling-loops';
 
 export interface N8nNode {
   id: string;
@@ -37,7 +37,7 @@ export interface ParsedWorkflow {
   connections: Record<string, any>;
   orderedNodes: N8nNode[];
   triggers: N8nNode[];
-  pollingLoops?: PollingLoop[];
+  pollingLoops?: PollingLoopPlan[];
 }
 
 /**
@@ -110,7 +110,7 @@ export class CoreWorkflowParser {
       node.ancestorTriggers = Array.from(ancestorTriggers);
     });
 
-    const pollingLoops = findPollingLoops(nodes, connections);
+    const pollingLoops = findPollingLoops(nodes, connections, json.settings?.executionOrder === 'v1');
     const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
     const entryGroups = new Map(pollingLoops.map(loop => [loop.entry, loop.nodes]));
     const nodeByName = new Map(nodes.map(node => [node.name, node]));

@@ -15,6 +15,20 @@ interface PollingRun {
   exitPorts: number[];
 }
 
+export interface PollingDispatchPlan {
+  entry: string;
+  routes: Array<[string, { output: number; target: string }[]]>;
+  boundaryRoutes: PollingDispatchPlan['routes'];
+}
+
+function pollingAttemptLimit(): number {
+  const limit = Number(process.env.N8N_TO_FASTIFY_POLL_MAX_ATTEMPTS ?? 100);
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new Error('N8N_TO_FASTIFY_POLL_MAX_ATTEMPTS must be a positive integer');
+  }
+  return limit;
+}
+
 /**
  * Runtime execution context for a single compiled workflow invocation.
  * Tracks node outputs, active conditional branches (IF/Switch), and webhook reply state.
@@ -23,6 +37,7 @@ export class WorkflowContext {
   private nodeOutputs = new Map<string, N8nItem[]>();
   private outputPorts = new Map<string, Map<number, N8nItem[]>>();
   private outputBatches = new Map<string, Map<number, N8nItem[][]>>();
+  private pollingExitBatches = new Map<string, Map<string, N8nItem[][]>>();
   private activeBranches = new Map<string, Set<number>>();
   private executedNodes = new Set<string>();
   private readonly trace?: WorkflowTrace;
@@ -118,10 +133,7 @@ export class WorkflowContext {
     runAttempt: (items: N8nItem[], assertCanRetry: () => void) => Promise<void>,
   ): Promise<void> {
     if (!initialBatches.some(batch => batch.length)) return;
-    const limit = Number(process.env.N8N_TO_FASTIFY_POLL_MAX_ATTEMPTS ?? 100);
-    if (!Number.isSafeInteger(limit) || limit < 1) {
-      throw new Error('N8N_TO_FASTIFY_POLL_MAX_ATTEMPTS must be a positive integer');
-    }
+    const limit = pollingAttemptLimit();
 
     const exits = new Map<number, N8nItem[][]>();
     const completed: N8nItem[][] = [];
@@ -150,6 +162,68 @@ export class WorkflowContext {
       }
     }
     this.setBatchedOutputs(plan.decision, exits, completed);
+  }
+
+  public async runMultiReturnPollingLoop(
+    plan: PollingDispatchPlan,
+    initialBatches: N8nItem[][],
+    steps: Array<[string, (items: N8nItem[]) => Promise<void>]>,
+  ): Promise<void> {
+    const byTarget = new Map<string, N8nItem[][]>();
+    this.pollingExitBatches.set(plan.entry, byTarget);
+    for (const [name] of steps) {
+      this.clearNodeOutput(name);
+      this.executedNodes.delete(name);
+    }
+    if (!initialBatches.some(batch => batch.length)) return;
+    const limit = pollingAttemptLimit();
+    const handlers = new Map(steps);
+    const routes = new Map(plan.routes);
+    const boundaryRoutes = new Map(plan.boundaryRoutes);
+    const exits = new Map<string, Map<number, N8nItem[][]>>();
+
+    for (const initial of initialBatches) {
+      if (!initial.length) continue;
+      let attempts = 0;
+      const pending = [{ name: plan.entry, items: initial }];
+      while (pending.length) {
+        const { name, items } = pending.pop()!;
+        if (name === plan.entry) {
+          if (attempts >= limit) throw new Error(`Polling loop exceeded its limit of ${limit} attempts`);
+          attempts++;
+        }
+        this.clearNodeOutput(name);
+        await this.runNodeBatches(name, [items], handlers.get(name)!);
+
+        const recordedPorts = new Set<number>();
+        for (const { output: port, target } of boundaryRoutes.get(name) ?? []) {
+          const output = this.getNodeOutput(name, port);
+          if (!output?.length) continue;
+          if (!byTarget.has(target)) byTarget.set(target, []);
+          byTarget.get(target)!.push(output);
+          if (recordedPorts.has(port)) continue;
+          recordedPorts.add(port);
+          if (!exits.has(name)) exits.set(name, new Map());
+          const batches = exits.get(name)!;
+          if (!batches.has(port)) batches.set(port, []);
+          batches.get(port)!.push(output);
+        }
+        // Use a stack to complete a higher canvas branch before starting its sibling.
+        const next = routes.get(name) ?? [];
+        for (let index = next.length - 1; index >= 0; index--) {
+          const { output, target } = next[index];
+          const batch = this.getNodeOutput(name, output);
+          if (batch?.length) pending.push({ name: target, items: batch });
+        }
+      }
+    }
+    for (const [name, batches] of exits) {
+      this.setBatchedOutputs(name, batches, [...batches.values()].flat());
+    }
+  }
+
+  public getPollingExitBatches(entry: string, target: string): N8nItem[][] {
+    return this.pollingExitBatches.get(entry)?.get(target) ?? [];
   }
 
   private clearNodeOutput(nodeName: string): void {

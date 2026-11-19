@@ -1,5 +1,23 @@
 import type { N8nNode } from './core-parser';
-import type { PollingLoop } from './polling-loops';
+import type { MultiReturnPollingLoop, PollingLoop } from './polling-loops';
+
+export function emitMultiReturnPollingLoop(
+  loop: MultiReturnPollingLoop,
+  nodes: Map<string, N8nNode>,
+  mapNode: (node: N8nNode, input: string) => string,
+  wrapNode: (node: N8nNode, condition: string, body: string) => string,
+): string {
+  const { nodes: members, ...plan } = loop;
+  const entry = nodes.get(plan.entry)!;
+  const initial = entry.incomingConnections!.find(connection => !members.includes(connection.sourceNode))!;
+  const inputBatches = `ctx.getNodeOutputBatches(${JSON.stringify(initial.sourceNode)}, ${initial.outputIndex})`;
+  const steps = members.map(name => {
+    const node = nodes.get(name)!;
+    const code = wrapNode(node, 'true', mapNode(node, 'pollingItems'));
+    return `    [${JSON.stringify(name)}, async (pollingItems) => {\n${code}    }]`;
+  });
+  return `  await ctx.runMultiReturnPollingLoop(${JSON.stringify(plan)}, ${inputBatches}, [\n${steps.join(',\n')}\n  ]);\n`;
+}
 
 export function emitPollingLoop(
   loop: PollingLoop,

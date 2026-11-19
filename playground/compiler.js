@@ -155,7 +155,7 @@
     }
     return result;
   }
-  function findPollingLoops(nodes, connections) {
+  function findPollingLoops(nodes, connections, canvasOrder = false) {
     const byName = new Map(nodes.map((node) => [node.name, node]));
     const edges = readMainEdges(byName, connections);
     const outgoing = new Map;
@@ -169,9 +169,9 @@
       incoming.get(edge.target).push(edge);
     }
     return cyclicComponents(byName.keys(), outgoing).map((component) => {
-      const loop = planLoop(component, byName, outgoing, incoming);
+      const loop = planLoop(component, byName, outgoing, incoming) ?? (canvasOrder ? planMultiReturnLoop(component, byName, outgoing, incoming) : undefined);
       if (!loop) {
-        throw new Error("[n8n-to-fastify] Cyclic dependency detected. Only single-entry polling loops " + "with a timed Wait and one IF or Switch retry output are supported. Nodes: " + component.slice().sort().map((node) => JSON.stringify(node)).join(", "));
+        throw new Error("[n8n-to-fastify] Cyclic dependency detected. Only single-entry polling loops " + "with a timed Wait and one IF or Switch retry output, or two v1 Switch return paths, are supported. Nodes: " + component.slice().sort().map((node) => JSON.stringify(node)).join(", "));
       }
       return loop;
     });
@@ -188,6 +188,73 @@
       main[0].push({ node: target, type: "main", index: 0 });
     }
     return { nodes: nodes.filter((node) => (entries.get(node.name) ?? node.name) === node.name), connections: projected };
+  }
+  function planMultiReturnLoop(component, nodes, outgoing, incoming) {
+    const members = new Set(component);
+    const definitions = component.map((name) => nodes.get(name));
+    if (definitions.some((node) => !allowedTypes.has(node.type) || node.disabled))
+      return;
+    const switches = definitions.filter((node) => node.type === "n8n-nodes-base.switch");
+    const waits = definitions.filter((node) => node.type === waitType);
+    if (switches.length !== 1 || waits.length !== 1 || switches[0].parameters?.options?.allMatchingOutputs || (waits[0].parameters?.resume ?? "timeInterval") !== "timeInterval")
+      return;
+    const decision = switches[0].name;
+    const entries = component.flatMap((name) => (incoming.get(name) ?? []).filter((edge) => !members.has(edge.source)));
+    if (entries.length !== 1 || entries[0].input !== 0)
+      return;
+    const entry = entries[0].target;
+    const inner = new Map(component.map((name) => [name, (outgoing.get(name) ?? []).filter((edge) => members.has(edge.target))]));
+    if ([...inner.values()].some((edges) => edges.some((edge) => edge.input !== 0)))
+      return;
+    const returns = inner.get(decision);
+    if (returns.length !== 2 || returns[0].output === returns[1].output)
+      return;
+    const visited = new Set([decision]);
+    const walk = (start, end) => {
+      let name = start;
+      while (name !== end) {
+        const edges = inner.get(name);
+        if (visited.has(name) || edges?.length !== 1)
+          return false;
+        visited.add(name);
+        name = edges[0].target;
+      }
+      return true;
+    };
+    if (!walk(entry, decision) || visited.has(waits[0].name) || !returns.every((edge) => edge.target !== entry && walk(edge.target, entry)) || visited.size !== component.length)
+      return;
+    const loopExits = component.flatMap((name) => (outgoing.get(name) ?? []).filter((edge) => !members.has(edge.target)));
+    if (!loopExits.length)
+      return;
+    const region = new Set([entry, ...component]);
+    for (const name of region) {
+      for (const { target } of outgoing.get(name) ?? []) {
+        const node = nodes.get(target);
+        if (!node.disabled && (allowedTypes.has(node.type) || node.type === "n8n-nodes-base.stopAndError") && (incoming.get(target) ?? []).every((edge) => edge.input === 0 && region.has(edge.source)))
+          region.add(target);
+      }
+    }
+    const boundaryRoutes = [];
+    const routes = [];
+    for (const name of region) {
+      const edges = outgoing.get(name) ?? [];
+      const external = edges.filter((edge) => !region.has(edge.target));
+      if (external.some(({ target }) => {
+        const node = nodes.get(target);
+        return node.type === "n8n-nodes-base.stopAndError" && !node.disabled;
+      }))
+        return;
+      if (external.length)
+        boundaryRoutes.push([name, external.map(({ output, target }) => ({ output, target }))]);
+      const local = edges.filter((edge) => region.has(edge.target)).reverse().sort((a, b) => {
+        const [ax, ay] = nodes.get(a.target)?.position ?? [0, 0];
+        const [bx, by] = nodes.get(b.target)?.position ?? [0, 0];
+        return ay - by || ax - bx;
+      });
+      if (local.length)
+        routes.push([name, local.map(({ output, target }) => ({ output, target }))]);
+    }
+    return { entry, nodes: [...region], routes, boundaryRoutes };
   }
   function planLoop(component, nodes, outgoing, incoming) {
     const members = new Set(component);
@@ -305,11 +372,11 @@
         }
         node.ancestorTriggers = Array.from(ancestorTriggers);
       });
-      const pollingLoops = findPollingLoops(nodes, connections);
+      const pollingLoops = findPollingLoops(nodes, connections, json.settings?.executionOrder === "v1");
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -1423,6 +1490,23 @@ ${legacyBinding}${execution}
   }
 
   // src/compiler/polling-code.ts
+  function emitMultiReturnPollingLoop(loop, nodes, mapNode, wrapNode) {
+    const { nodes: members, ...plan } = loop;
+    const entry = nodes.get(plan.entry);
+    const initial = entry.incomingConnections.find((connection) => !members.includes(connection.sourceNode));
+    const inputBatches = `ctx.getNodeOutputBatches(${JSON.stringify(initial.sourceNode)}, ${initial.outputIndex})`;
+    const steps = members.map((name) => {
+      const node = nodes.get(name);
+      const code = wrapNode(node, "true", mapNode(node, "pollingItems"));
+      return `    [${JSON.stringify(name)}, async (pollingItems) => {
+${code}    }]`;
+    });
+    return `  await ctx.runMultiReturnPollingLoop(${JSON.stringify(plan)}, ${inputBatches}, [
+${steps.join(`,
+`)}
+  ]);
+`;
+  }
   function emitPollingLoop(loop, nodes, mapNode, wrapNode) {
     const { entry, terminalExits, repeatPort, ...runtimePlan } = loop;
     const entryNode = nodes.get(entry);
@@ -1473,8 +1557,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1537,10 +1621,22 @@ const DateTime = {
   })
 };
 `;
+      const loops = wf.pollingLoops ?? [];
+      const trackResult = loops.some((loop) => ("routes" in loop));
       let declCode = `  let item: N8nItem = inputItems[0] || { json: {} };
+`;
+      if (trackResult)
+        declCode += `  let workflowItems = inputItems;
 `;
       let bodyCode = `  ctx.setNodeOutput("__initial__", inputItems);
 `;
+      const emitNodeBlock = (node, condition, code, indent) => {
+        if (trackResult && (node.type !== stopAndErrorType || node.disabled)) {
+          code += `
+workflowItems = ctx.getNode(${JSON.stringify(node.name)}).all();`;
+        }
+        return this.generateNodeBlock(wf.id, node, condition, code, indent);
+      };
       const nodeVarMap = new Map;
       wf.orderedNodes.forEach((node, index) => {
         const varName = `node_${index}_${this.sanitizeIdentifier(node.name)}`;
@@ -1550,9 +1646,8 @@ const DateTime = {
       const hasRabbitMqTrigger = triggers.some((node) => node.type === rabbitMqTriggerType);
       const disabledModes = new Map(wf.orderedNodes.map((node) => [node, getDisabledNodeMode(node, wf)]));
       const nonTriggers = wf.orderedNodes.filter((n) => !triggers.includes(n) && disabledModes.get(n) !== "skip");
-      const loops = wf.pollingLoops ?? [];
       const loopsByMember = new Map(loops.flatMap((loop) => loop.nodes.map((name) => [name, loop])));
-      const terminalNames = new Set(loops.flatMap((loop) => loop.terminalExits.map((exit) => exit.target)));
+      const terminalNames = new Set(loops.flatMap((loop) => ("terminalExits" in loop) ? loop.terminalExits.map((exit) => exit.target) : []));
       const mapNode = (node, previousVariableName) => {
         const varName = nodeVarMap.get(node.name);
         return disabledModes.get(node) === "passthrough" ? `
@@ -1583,7 +1678,7 @@ const DateTime = {
         }
         const nodeCode = `${varName} = inputItems;
 ctx.setNodeOutput(${nodeName}, inputItems);`;
-        bodyCode += this.generateNodeBlock(wf.id, node, condition, nodeCode);
+        bodyCode += emitNodeBlock(node, condition, nodeCode);
       });
       nonTriggers.forEach((node) => {
         const varName = nodeVarMap.get(node.name);
@@ -1592,7 +1687,7 @@ ctx.setNodeOutput(${nodeName}, inputItems);`;
         const loop = loopsByMember.get(node.name);
         if (loop) {
           if (node.name === loop.entry) {
-            bodyCode += emitPollingLoop(loop, nodesByName, mapNode, (member, condition, code) => this.generateNodeBlock(wf.id, member, condition, code));
+            bodyCode += "routes" in loop ? emitMultiReturnPollingLoop(loop, nodesByName, mapNode, emitNodeBlock) : emitPollingLoop(loop, nodesByName, mapNode, emitNodeBlock);
           }
           return;
         }
@@ -1608,8 +1703,18 @@ ctx.setNodeOutput(${nodeName}, inputItems);`;
         const prevExpr = runPerIncomingBatch ? "incomingItems" : "inputItems";
         let nodeCode = mapNode(node, prevExpr);
         if (runPerIncomingBatch) {
-          const batches = incoming.map((conn) => `ctx.getNodeOutputBatches(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`);
-          nodeCode = `await ctx.runNodeBatches(${JSON.stringify(node.name)}, [${batches.join(", ")}].flat(), async (incomingItems) => {
+          const emittedRegions = new Set;
+          const inputBatches = incoming.flatMap((conn) => {
+            const region = loopsByMember.get(conn.sourceNode);
+            if (!region || !("routes" in region)) {
+              return [`ctx.getNodeOutputBatches(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`];
+            }
+            if (emittedRegions.has(region.entry))
+              return [];
+            emittedRegions.add(region.entry);
+            return [`ctx.getPollingExitBatches(${JSON.stringify(region.entry)}, ${JSON.stringify(node.name)})`];
+          });
+          nodeCode = `await ctx.runNodeBatches(${JSON.stringify(node.name)}, [${inputBatches.join(", ")}].flat(), async (incomingItems) => {
 ${nodeCode.trim()}
 });`;
         }
@@ -1620,10 +1725,10 @@ ${nodeCode.trim()}
         } else if (hasRabbitMqTrigger) {
           branchCheckStr = `entryNode === undefined && ${branchCheckStr}`;
         }
-        bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode, ancestorTriggers.length > 0 ? "      " : "    ");
+        bodyCode += emitNodeBlock(node, branchCheckStr, nodeCode, ancestorTriggers.length > 0 ? "      " : "    ");
       });
       const lastNodeName = wf.orderedNodes.filter((node) => disabledModes.get(node) !== "skip" && (node.type !== stopAndErrorType || node.disabled)).at(-1)?.name;
-      const returnItemsExpr = lastNodeName ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])` : `inputItems`;
+      const returnItemsExpr = trackResult ? "workflowItems" : lastNodeName ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])` : `inputItems`;
       const keys = Array.from(new Set([wf.id, wf.name, wf.fileName])).filter(Boolean);
       return `${imports}
 export async function ${functionName}(
