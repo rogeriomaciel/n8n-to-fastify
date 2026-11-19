@@ -5,6 +5,10 @@ export function usesMultipartBody(params: N8nNode['parameters']): boolean {
   return params?.sendBody === true && params.contentType === 'multipart-form-data';
 }
 
+export function usesFileResponse(params: N8nNode['parameters']): boolean {
+  return params?.options?.response?.response?.responseFormat === 'file';
+}
+
 export function usesJsonHeaders(params: N8nNode['parameters']): boolean {
   return params?.sendHeaders === true && params.specifyHeaders === 'json';
 }

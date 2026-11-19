@@ -10,7 +10,7 @@ import { compressionNodeType, mapCompression } from './compression';
 import { convertToFileType, mapConvertToFile } from './convert-to-file';
 import { mapWaitInterval, waitNodeType } from './wait-interval';
 import { mapStopAndError, stopAndErrorType } from './stop-and-error';
-import { generateMultipartBody, getMultipartIssue, usesJsonHeaders, usesMultipartBody } from './http-request';
+import { generateMultipartBody, getMultipartIssue, usesFileResponse, usesJsonHeaders, usesMultipartBody } from './http-request';
 
 export interface NodeMapperContext {
   node: N8nNode;
@@ -476,9 +476,23 @@ ${legacyBinding}${execution}
       if (!reqHeaders.has('content-type')) reqHeaders.set('content-type', 'application/json');`;
     }
 
+    let callbackParameters = 'currentItem: N8nItem';
+    let responseSnippet = `const text = await res.text();
+      let data: any;
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+      return { json: typeof data === 'object' && data !== null ? data : { data } };`;
+    if (usesFileResponse(params)) {
+      callbackParameters += ', index: number, batch: N8nItem[]';
+      const outputProperty = ExpressionParser.parse(
+        params.options.response.response.outputPropertyName ?? 'data', 'batch[0]', 'batch',
+      );
+      responseSnippet = `const outputProperty = ((item: N8nItem) => ${outputProperty})(batch[0]);
+      return readFileResponse(res, targetUrl, currentItem, String(outputProperty ?? 'data'), index);`;
+    }
+
     return `
     // [Node: ${ctx.node.name}] Native HTTP Request (${method})
-    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
+    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (${callbackParameters}) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
       ${headersSnippet}
@@ -488,10 +502,7 @@ ${legacyBinding}${execution}
         headers: reqHeaders,
         ...(reqBody !== undefined ? { body: reqBody } : {})
       });
-      const text = await res.text();
-      let data: any;
-      try { data = JSON.parse(text); } catch { data = { raw: text }; }
-      return { json: typeof data === 'object' && data !== null ? data : { data } };
+      ${responseSnippet}
     }));
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;

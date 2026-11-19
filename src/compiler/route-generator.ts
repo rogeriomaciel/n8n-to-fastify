@@ -1,5 +1,6 @@
 import { ParsedWorkflow } from './parser';
 import { CodeGenerator } from './code-generator';
+import { usesFileResponse } from './mappers/http-request';
 import { rabbitMqPublisherType } from './mappers/rabbitmq';
 import { s3NodeType } from './mappers/s3';
 import { compressionNodeType } from './mappers/compression';
@@ -202,7 +203,10 @@ try {
     const needsS3 = workflows.some(workflow => workflow.nodes.some(node => node.type === s3NodeType));
     const needsCompression = workflows.some(workflow => workflow.nodes.some(node => node.type === compressionNodeType));
     const needsMimeTypes = needsS3 || needsCompression ||
-      workflows.some(workflow => workflow.nodes.some(node => node.type === convertToFileType));
+      workflows.some(workflow => workflow.nodes.some(node =>
+        node.type === convertToFileType ||
+        (node.type === 'n8n-nodes-base.httpRequest' && usesFileResponse(node.parameters)),
+      ));
     return JSON.stringify(
       {
         name: 'compiled-n8n-service',

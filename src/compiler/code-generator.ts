@@ -11,7 +11,7 @@ import { compressionNodeType } from './mappers/compression';
 import { convertToFileType } from './mappers/convert-to-file';
 import { stopAndErrorType } from './mappers/stop-and-error';
 import { waitNodeType } from './mappers/wait-interval';
-import { usesJsonHeaders, usesMultipartBody } from './mappers/http-request';
+import { usesFileResponse, usesJsonHeaders, usesMultipartBody } from './mappers/http-request';
 import { rabbitMqTriggerType } from './rabbitmq-trigger';
 
 export class CodeGenerator {
@@ -58,8 +58,9 @@ export class CodeGenerator {
       ? `import { convertItemsToJsonFile } from '${runtimePrefix}/convert-to-json';\n`
       : '';
     const httpRequestImport = wf.nodes.some(node =>
-      node.type.includes('httpRequest') && (usesMultipartBody(node.parameters) || usesJsonHeaders(node.parameters))
-    ) ? `import { createRequestForm, parseRequestHeaders } from '${runtimePrefix}/http-request';\n` : '';
+      node.type.includes('httpRequest') &&
+      (usesMultipartBody(node.parameters) || usesJsonHeaders(node.parameters) || usesFileResponse(node.parameters))
+    ) ? `import { createRequestForm, parseRequestHeaders, readFileResponse } from '${runtimePrefix}/http-request';\n` : '';
     const waitImport = wf.nodes.some(node => node.type === waitNodeType)
       ? `import { waitForInterval } from '${runtimePrefix}/wait-interval';\n`
       : '';

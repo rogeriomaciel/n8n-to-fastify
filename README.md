@@ -103,7 +103,7 @@ Place a `.env` file in the generated service directory and run `bun run start` f
 | **Filter** | Deterministic branch tracking |
 | **Switch** | Routes each item by rule or output-index expression, with configurable fallback in rules mode |
 | **Set / Edit Fields** | Manual assignments, v3.4 JSON Output, dot-notation, `keepOnlySet`, and binary preservation |
-| **HTTP Request** | Native `fetch()` with JSON headers and JSON or multipart form bodies |
+| **HTTP Request** | Native `fetch()` with JSON headers, JSON or multipart bodies, and binary file responses |
 | **Aggregate** | In-memory item aggregation |
 | **Split Out** | Expands nested arrays into individual `N8nItem[]` items |
 | **Merge** | Appends branches or combines items by position across up to ten destination ports |
@@ -216,9 +216,11 @@ The compiler supports `File / Download` from S3 node v1. Set `S3_ENDPOINT`, `AWS
 
 Each object is downloaded in order and stored as base64 under the configured binary property (`data` by default), preserving input JSON and other binary fields. The generated `package.json` includes `@aws-sdk/client-s3` and `mime-types` automatically when a workflow uses this node.
 
-## 📤 HTTP Request Multipart
+## 📤 HTTP Request
 
 `HTTP Request` supports multipart text fields and n8n binary-file fields for `POST`, `PUT`, and `PATCH`. Binary fields read inline base64 data from the selected binary property and preserve file name and MIME type; the runtime removes manual `content-type` and `content-length` headers so `FormData` computes the boundary automatically.
+
+Set the response format to **File** to save the response in the configured binary property (default `data`) alongside the input JSON. Strict mode rejects the combination of **File** and **Include Response Headers and Status**.
 
 With `Send Headers` enabled, `specifyHeaders: 'json'` accepts either a JSON string or an object of header names and values.
 

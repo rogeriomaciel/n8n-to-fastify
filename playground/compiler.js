@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -855,6 +855,9 @@
   function usesMultipartBody(params) {
     return params?.sendBody === true && params.contentType === "multipart-form-data";
   }
+  function usesFileResponse(params) {
+    return params?.options?.response?.response?.responseFormat === "file";
+  }
   function usesJsonHeaders(params) {
     return params?.sendHeaders === true && params.specifyHeaders === "json";
   }
@@ -1270,9 +1273,20 @@ ${legacyBinding}${execution}
         headersSnippet = `const reqHeaders = ${headersObj};
       if (!reqHeaders.has('content-type')) reqHeaders.set('content-type', 'application/json');`;
       }
+      let callbackParameters = "currentItem: N8nItem";
+      let responseSnippet = `const text = await res.text();
+      let data: any;
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+      return { json: typeof data === 'object' && data !== null ? data : { data } };`;
+      if (usesFileResponse(params)) {
+        callbackParameters += ", index: number, batch: N8nItem[]";
+        const outputProperty = ExpressionParser.parse(params.options.response.response.outputPropertyName ?? "data", "batch[0]", "batch");
+        responseSnippet = `const outputProperty = ((item: N8nItem) => ${outputProperty})(batch[0]);
+      return readFileResponse(res, targetUrl, currentItem, String(outputProperty ?? 'data'), index);`;
+      }
       return `
     // [Node: ${ctx.node.name}] Native HTTP Request (${method})
-    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
+    ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (${callbackParameters}) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
       ${headersSnippet}
@@ -1282,10 +1296,7 @@ ${legacyBinding}${execution}
         headers: reqHeaders,
         ...(reqBody !== undefined ? { body: reqBody } : {})
       });
-      const text = await res.text();
-      let data: any;
-      try { data = JSON.parse(text); } catch { data = { raw: text }; }
-      return { json: typeof data === 'object' && data !== null ? data : { data } };
+      ${responseSnippet}
     }));
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
@@ -1473,8 +1484,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1519,7 +1530,7 @@ ${legacyBinding}${execution}
 ` : "";
       const jsonFileImport = wf.nodes.some((node) => node.type === convertToFileType) ? `import { convertItemsToJsonFile } from '${runtimePrefix}/convert-to-json';
 ` : "";
-      const httpRequestImport = wf.nodes.some((node) => node.type.includes("httpRequest") && (usesMultipartBody(node.parameters) || usesJsonHeaders(node.parameters))) ? `import { createRequestForm, parseRequestHeaders } from '${runtimePrefix}/http-request';
+      const httpRequestImport = wf.nodes.some((node) => node.type.includes("httpRequest") && (usesMultipartBody(node.parameters) || usesJsonHeaders(node.parameters) || usesFileResponse(node.parameters))) ? `import { createRequestForm, parseRequestHeaders, readFileResponse } from '${runtimePrefix}/http-request';
 ` : "";
       const waitImport = wf.nodes.some((node) => node.type === waitNodeType) ? `import { waitForInterval } from '${runtimePrefix}/wait-interval';
 ` : "";
@@ -1831,7 +1842,7 @@ try {
       const needsRabbitMq = workflows.some((workflow) => getRabbitMqTriggers(workflow).length > 0 || workflow.nodes.some((node) => node.type === rabbitMqPublisherType));
       const needsS3 = workflows.some((workflow) => workflow.nodes.some((node) => node.type === s3NodeType));
       const needsCompression = workflows.some((workflow) => workflow.nodes.some((node) => node.type === compressionNodeType));
-      const needsMimeTypes = needsS3 || needsCompression || workflows.some((workflow) => workflow.nodes.some((node) => node.type === convertToFileType));
+      const needsMimeTypes = needsS3 || needsCompression || workflows.some((workflow) => workflow.nodes.some((node) => node.type === convertToFileType || node.type === "n8n-nodes-base.httpRequest" && usesFileResponse(node.parameters)));
       return JSON.stringify({
         name: "compiled-n8n-service",
         version: "1.0.0",

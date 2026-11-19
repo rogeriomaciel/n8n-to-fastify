@@ -8,7 +8,7 @@ import { getRabbitMqPublisherIssue, rabbitMqPublisherType } from './mappers/rabb
 import { getS3DownloadIssue, s3NodeType } from './mappers/s3';
 import { compressionNodeType, getCompressionIssue } from './mappers/compression';
 import { convertToFileType, getConvertToFileIssue } from './mappers/convert-to-file';
-import { getMultipartIssue, usesMultipartBody } from './mappers/http-request';
+import { getMultipartIssue, usesFileResponse, usesMultipartBody } from './mappers/http-request';
 import { getWaitIntervalIssue, waitNodeType } from './mappers/wait-interval';
 import { getStopAndErrorIssue, stopAndErrorType } from './mappers/stop-and-error';
 import { parseRabbitMqTrigger, rabbitMqTriggerType } from './rabbitmq-trigger';
@@ -108,6 +108,9 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
       if (issue) report(node.name, issue);
     }
     if (node.type === 'n8n-nodes-base.httpRequest') {
+      if (usesFileResponse(params) && params.options.response.response.fullResponse) {
+        report(node.name, 'HTTP Request file responses do not include response headers and status yet');
+      }
       if (usesMultipartBody(params)) {
         const issue = getMultipartIssue(params);
         if (issue) report(node.name, issue);
