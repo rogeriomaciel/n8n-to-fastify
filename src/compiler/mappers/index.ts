@@ -105,6 +105,10 @@ export class NodeMappers {
       return mapWaitInterval(ctx);
     }
 
+    if (type === 'n8n-nodes-base.noOp') {
+      return this.mapGenericNode(ctx, 'No Operation');
+    }
+
     return this.mapGenericNode(ctx, `Unmapped Node (${type})`);
   }
 
