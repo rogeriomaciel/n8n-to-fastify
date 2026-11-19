@@ -1,7 +1,7 @@
 import { N8nNode } from '../parser';
 import { ExpressionParser } from '../expression-parser';
 import { isPositionMerge, mapPositionMerge } from './position-merge';
-import { getLegacyNodeReferenceIssue } from './code-context';
+import { getLegacyNodeReferenceIssue, isCodeNode } from './code-context';
 import { continuesCodeOnRegularOutput } from './code-errors';
 import { getRawEditFieldsIssue, isRawEditFields, mapRawEditFields } from './raw-edit-fields';
 import { mapRabbitMqPublisher, rabbitMqPublisherType } from './rabbitmq';
@@ -48,7 +48,7 @@ export class NodeMappers {
       return this.mapRespondToWebhookNode(ctx);
     }
 
-    if (type.includes('code') || type.includes('function')) {
+    if (isCodeNode(ctx.node)) {
       return this.mapCodeNode(ctx);
     }
 
@@ -159,10 +159,11 @@ export class NodeMappers {
       .replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`)
       .replace(/\$now/g, 'DateTime.now()');
 
+    // Bind the sandbox receiver so direct and detached helper calls both work.
     const runCode = `
-      const result = await (async () => {
+      const result = await (async function (this: { helpers: { httpRequest: typeof codeHttpRequest } }) {
         ${transformedCode}
-      })();
+      }).call({ helpers: { httpRequest: codeHttpRequest } });
       return n8n.normalizeItems(result);`;
     // Keep the user's code indentation unchanged, including multiline template literals.
     const execution = continuesCodeOnRegularOutput(ctx.node)

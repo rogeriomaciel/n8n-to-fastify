@@ -3,7 +3,7 @@ import { NodeMappers } from './mappers';
 import { emitPollingLoop } from './polling-code';
 import { getDisabledNodeMode } from './disabled-node';
 import { isPositionMerge } from './mappers/position-merge';
-import { collectLegacyNodePorts, usesLegacyNodeReferences } from './mappers/code-context';
+import { collectLegacyNodePorts, isCodeNode, usesLegacyNodeReferences } from './mappers/code-context';
 import { isRawEditFields, usesRawLegacyNodeReferences } from './mappers/raw-edit-fields';
 import { rabbitMqPublisherType } from './mappers/rabbitmq';
 import { s3NodeType } from './mappers/s3';
@@ -29,6 +29,9 @@ export class CodeGenerator {
     const functionName = `workflow_${this.sanitizeIdentifier(wf.fileName)}`;
     const depth = (wf.relativePath.match(/\//g) || []).length;
     const runtimePrefix = '../'.repeat(depth + 1) + 'runtime';
+    const codeHttpRequestImport = wf.nodes.some(isCodeNode)
+      ? `import { codeHttpRequest } from '${runtimePrefix}/code-http-request';\n`
+      : '';
     const positionMergeImport = wf.nodes.some(isPositionMerge)
       ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';\n`
       : '';
@@ -67,7 +70,7 @@ export class CodeGenerator {
       ? `import { createWorkflowStopError } from '${runtimePrefix}/stop-and-error';\n`
       : '';
 
-    const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
+    const imports = `${codeHttpRequestImport}import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}

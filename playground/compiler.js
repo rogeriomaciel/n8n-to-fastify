@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -501,8 +501,11 @@
   }
 
   // src/compiler/mappers/code-context.ts
+  function isCodeNode(node) {
+    return node.type.includes("code") || node.type.includes("function");
+  }
   function usesLegacyNodeReferences(node) {
-    if (!node.type.includes("code") && !node.type.includes("function"))
+    if (!isCodeNode(node))
       return false;
     const code = node.parameters?.jsCode || node.parameters?.functionCode;
     return typeof code === "string" && /\$node\b/.test(code);
@@ -910,7 +913,7 @@
       if (type.includes("respondToWebhook")) {
         return this.mapRespondToWebhookNode(ctx);
       }
-      if (type.includes("code") || type.includes("function")) {
+      if (isCodeNode(ctx.node)) {
         return this.mapCodeNode(ctx);
       }
       if (type.includes("executeWorkflowTrigger")) {
@@ -993,9 +996,9 @@
 ` : "";
       const transformedCode = rawCode.replace(/\$input\.all\(\)/g, "currentItems").replace(/\$input\.first\(\)/g, "(currentItems[0] || { json: {} })").replace(/\$input\.item/g, "(currentItems[0] || { json: {} })").replace(/\$json/g, "(currentItems[0]?.json || {})").replace(/\$\(['"](.*?)['"]\)\.first\(\)/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.first() || { json: {} })`).replace(/\$\(['"](.*?)['"]\)\.item/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.item || { json: {} })`).replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_, n) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`).replace(/\$now/g, "DateTime.now()");
       const runCode = `
-      const result = await (async () => {
+      const result = await (async function (this: { helpers: { httpRequest: typeof codeHttpRequest } }) {
         ${transformedCode}
-      })();
+      }).call({ helpers: { httpRequest: codeHttpRequest } });
       return n8n.normalizeItems(result);`;
       const execution = continuesCodeOnRegularOutput(ctx.node) ? `
       try {${runCode}
@@ -1473,8 +1476,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1501,6 +1504,8 @@ ${legacyBinding}${execution}
       const functionName = `workflow_${this.sanitizeIdentifier(wf.fileName)}`;
       const depth = (wf.relativePath.match(/\//g) || []).length;
       const runtimePrefix = "../".repeat(depth + 1) + "runtime";
+      const codeHttpRequestImport = wf.nodes.some(isCodeNode) ? `import { codeHttpRequest } from '${runtimePrefix}/code-http-request';
+` : "";
       const positionMergeImport = wf.nodes.some(isPositionMerge) ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';
 ` : "";
       const legacyNodes = new Set(wf.nodes.filter((node) => usesLegacyNodeReferences(node) || usesRawLegacyNodeReferences(node)));
@@ -1525,7 +1530,7 @@ ${legacyBinding}${execution}
 ` : "";
       const stopAndErrorImport = wf.nodes.some((node) => node.type === stopAndErrorType) ? `import { createWorkflowStopError } from '${runtimePrefix}/stop-and-error';
 ` : "";
-      const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
+      const imports = `${codeHttpRequestImport}import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
