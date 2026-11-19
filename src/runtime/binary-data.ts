@@ -1,7 +1,21 @@
 import { createRequire } from 'node:module';
 import { posix } from 'node:path';
 
-const require = createRequire(import.meta.url);
+interface MimeTypes {
+  lookup(path: string): string | false;
+  extension(type: string): string | false;
+}
+
+function loadMimeTypes(): MimeTypes {
+  // This dependency is optional for services that only handle JSON.
+  // The literal require lets Bun bundle it when present.
+  try {
+    return require('mime-types') as MimeTypes;
+  } catch (error) {
+    if (typeof require !== 'function') return createRequire(import.meta.url)('mime-types') as MimeTypes;
+    throw error;
+  }
+}
 
 function formatSize(byteCount: number): string {
   const units = ['B', 'kB', 'MB', 'GB', 'TB', 'PB'];
@@ -21,10 +35,7 @@ function fileTypeFromMimeType(mimeType: string): string | undefined {
 }
 
 export function createBinaryData(bytes: Uint8Array, fileName: string, contentType?: string) {
-  const types = require('mime-types') as {
-    lookup(path: string): string | false;
-    extension(type: string): string | false;
-  };
+  const types = loadMimeTypes();
   const mimeType = contentType || types.lookup(fileName) || 'text/plain';
   const fileExtension = posix.extname(fileName).slice(1) || types.extension(mimeType) || undefined;
   return {

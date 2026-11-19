@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import { createBinaryData } from './binary-data';
 import type { N8nItem } from './n8n-helper';
 
@@ -52,7 +51,8 @@ function readS3Config(): S3ClientConfig {
 export async function downloadS3Files(downloads: S3Download[]): Promise<N8nItem[]> {
   if (downloads.length === 0) return [];
   const config = readS3Config();
-  const { S3Client, GetObjectCommand } = createRequire(import.meta.url)('@aws-sdk/client-s3') as {
+  // Keep the optional SDK visible to Bun's executable bundler.
+  const { S3Client, GetObjectCommand } = await import('@aws-sdk/client-s3' as string) as {
     S3Client: new (config: S3ClientConfig) => S3Client;
     GetObjectCommand: new (input: { Bucket: string; Key: string }) => object;
   };

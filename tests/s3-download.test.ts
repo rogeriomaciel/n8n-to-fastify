@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -77,15 +77,24 @@ test('S3 v1 download preserves item order, JSON and binary content', () => {
         error instanceof Error && error.message === 'S3 Download could not find the requested object'
       );
     `);
-    const verified = Bun.spawnSync([process.execPath, 'run', 'verify.ts'], {
-      cwd: service,
-      env: {
-        ...process.env, S3_ENDPOINT: 'http://127.0.0.1:9000', S3_FORCE_PATH_STYLE: 'true',
-        AWS_ACCESS_KEY_ID: 'fixture-access', AWS_SECRET_ACCESS_KEY: 'fixture-secret',
-      },
-    });
+    const env = {
+      ...process.env, S3_ENDPOINT: 'http://127.0.0.1:9000', S3_FORCE_PATH_STYLE: 'true',
+      AWS_ACCESS_KEY_ID: 'fixture-access', AWS_SECRET_ACCESS_KEY: 'fixture-secret',
+    };
+    const verified = Bun.spawnSync([process.execPath, 'run', 'verify.ts'], { cwd: service, env });
     expect(verified.stderr.toString()).toBe('');
     expect(verified.exitCode).toBe(0);
+
+    const executable = path.join(dir, process.platform === 'win32' ? 'verify.exe' : 'verify');
+    const build = Bun.spawnSync([process.execPath, 'build', '--compile', 'verify.ts', '--outfile', executable], {
+      cwd: service,
+    });
+    expect(build.stderr.toString()).toBe('');
+    expect(build.exitCode).toBe(0);
+    renameSync(path.join(service, 'node_modules'), path.join(service, 'unused-dependencies'));
+    const standalone = Bun.spawnSync([executable], { cwd: dir, env });
+    expect(standalone.stderr.toString()).toBe('');
+    expect(standalone.exitCode).toBe(0);
 
     writeFileSync(input, JSON.stringify({ nodes: [{
       ...node, parameters: { ...node.parameters, operation: 'upload' },
