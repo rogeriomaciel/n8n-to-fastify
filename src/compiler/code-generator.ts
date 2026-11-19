@@ -11,7 +11,7 @@ import { compressionNodeType } from './mappers/compression';
 import { convertToFileType } from './mappers/convert-to-file';
 import { stopAndErrorType } from './mappers/stop-and-error';
 import { waitNodeType } from './mappers/wait-interval';
-import { usesJsonHeaders, usesMultipartBody } from './mappers/http-request';
+import { usesJsonHeaders, usesMultipartBody, usesHttpLegacyNodeReferences } from './mappers/http-request';
 import { rabbitMqTriggerType } from './rabbitmq-trigger';
 
 export class CodeGenerator {
@@ -33,7 +33,7 @@ export class CodeGenerator {
       ? `import { mergeByPosition } from '${runtimePrefix}/position-merge';\n`
       : '';
     const legacyNodes = new Set(wf.nodes.filter(node =>
-      usesLegacyNodeReferences(node) || usesRawLegacyNodeReferences(node)
+      usesLegacyNodeReferences(node) || usesRawLegacyNodeReferences(node) || usesHttpLegacyNodeReferences(node)
     ));
     const rawFieldsImport = wf.nodes.some(isRawEditFields)
       ? `import { applyRawEditFields, encodeJsonTemplateValue } from '${runtimePrefix}/raw-edit-fields';\n`

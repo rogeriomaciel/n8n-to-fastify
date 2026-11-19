@@ -12,6 +12,7 @@ export function createLegacyNodeReferences(
   nodeNames: ReadonlySet<string>,
   upstreamPorts: Array<[string, number]>,
   itemIndex = 0,
+  inputBatch?: N8nItem[],
 ): Record<string, LegacyNodeReference> {
   const ports = new Map(upstreamPorts);
   return new Proxy(Object.create(null), {
@@ -23,7 +24,8 @@ export function createLegacyNodeReferences(
         if (!context.hasExecutedNode(name)) throw new Error('Referenced node has not executed');
         const port = ports.get(name);
         if (port === undefined) throw new Error('Referenced node is not connected to the Code node');
-        const items = context.getNodeOutput(name, port);
+        const connected = inputBatch && context.getOutputForInputBatch(name, port, inputBatch);
+        const items = connected ?? context.getNodeOutput(name, port);
         if (!items?.length) throw new Error('Referenced node output has no items');
         const item = items[itemIndex];
         if (!item) throw new Error('Referenced node output has no item at the current index');

@@ -23,6 +23,7 @@ export class WorkflowContext {
   private nodeOutputs = new Map<string, N8nItem[]>();
   private outputPorts = new Map<string, Map<number, N8nItem[]>>();
   private outputBatches = new Map<string, Map<number, N8nItem[][]>>();
+  private batchInputs = new WeakMap<N8nItem[], N8nItem[]>();
   private activeBranches = new Map<string, Set<number>>();
   private executedNodes = new Set<string>();
   private readonly trace?: WorkflowTrace;
@@ -80,13 +81,30 @@ export class WorkflowContext {
     return items === undefined ? [] : [items];
   }
 
+  public getOutputForInputBatch(nodeName: string, outputIndex: number, inputBatch: N8nItem[]): N8nItem[] | undefined {
+    const outputBatches = new Set(this.getNodeOutputBatches(nodeName, outputIndex));
+    const visited = new Set<N8nItem[]>();
+    // Each transformed batch retains its input relationship for named references.
+    for (let batch: N8nItem[] | undefined = inputBatch; batch && !visited.has(batch); batch = this.batchInputs.get(batch)) {
+      if (outputBatches.has(batch)) return batch;
+      visited.add(batch);
+    }
+  }
+
   public async runNodeBatches(
     nodeName: string,
     batches: N8nItem[][],
     run: (items: N8nItem[]) => Promise<void>,
   ): Promise<void> {
+    const runAndLinkOutputs = async (input: N8nItem[]) => {
+      await run(input);
+      for (const port of this.activeBranches.get(nodeName) ?? []) {
+        const output = this.getNodeOutput(nodeName, port);
+        if (output && output !== input && !this.batchInputs.has(output)) this.batchInputs.set(output, input);
+      }
+    };
     if (batches.length < 2) {
-      if (batches.length === 1) await run(batches[0]);
+      if (batches.length === 1) await runAndLinkOutputs(batches[0]);
       return;
     }
 
@@ -94,7 +112,7 @@ export class WorkflowContext {
     const all: N8nItem[][] = [];
     for (const input of batches) {
       this.clearNodeOutput(nodeName);
-      await run(input);
+      await runAndLinkOutputs(input);
 
       const items = this.nodeOutputs.get(nodeName);
       if (items?.length) all.push(items);
