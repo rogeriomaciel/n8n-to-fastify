@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -1237,6 +1237,7 @@ ${legacyBinding}${execution}
       const prevVar = ctx.previousVariableName || "inputItems";
       const method = (params.method || "GET").toUpperCase();
       const urlExpr = ExpressionParser.parse(params.url || "");
+      const timeout = ExpressionParser.parse(params.options?.timeout ?? 0);
       const multipart = usesMultipartBody(params);
       const jsonHeaders = usesJsonHeaders(params);
       let headersObj = "{}";
@@ -1275,13 +1276,15 @@ ${legacyBinding}${execution}
     ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
+      const responseTimeout = createResponseTimeout(${timeout});
       ${headersSnippet}
       const reqBody = ${bodySnippet};
       const res = await fetch(targetUrl, {
         method: ${JSON.stringify(method)},
         headers: reqHeaders,
-        ...(reqBody !== undefined ? { body: reqBody } : {})
-      });
+        ...(reqBody !== undefined ? { body: reqBody } : {}),
+        signal: responseTimeout.start(),
+      }).finally(responseTimeout.clear);
       const text = await res.text();
       let data: any;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
@@ -1473,8 +1476,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1525,11 +1528,13 @@ ${legacyBinding}${execution}
 ` : "";
       const stopAndErrorImport = wf.nodes.some((node) => node.type === stopAndErrorType) ? `import { createWorkflowStopError } from '${runtimePrefix}/stop-and-error';
 ` : "";
+      const httpTimeoutImport = wf.nodes.some((node) => node.type.includes("httpRequest")) ? `import { createResponseTimeout } from '${runtimePrefix}/http-request';
+` : "";
       const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
-${legacyNames}
+${httpTimeoutImport}${legacyNames}
 const DateTime = {
   now: () => ({
     toString: () => new Date().toISOString(),

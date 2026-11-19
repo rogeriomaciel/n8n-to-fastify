@@ -436,6 +436,7 @@ ${legacyBinding}${execution}
     const prevVar = ctx.previousVariableName || 'inputItems';
     const method = (params.method || 'GET').toUpperCase();
     const urlExpr = ExpressionParser.parse(params.url || '');
+    const timeout = ExpressionParser.parse(params.options?.timeout ?? 0);
     const multipart = usesMultipartBody(params);
     const jsonHeaders = usesJsonHeaders(params);
 
@@ -481,13 +482,15 @@ ${legacyBinding}${execution}
     ${ctx.variableName} = await Promise.all((${prevVar} || inputItems).map(async (currentItem: N8nItem) => {
       const item = currentItem;
       const targetUrl = ${urlExpr};
+      const responseTimeout = createResponseTimeout(${timeout});
       ${headersSnippet}
       const reqBody = ${bodySnippet};
       const res = await fetch(targetUrl, {
         method: ${JSON.stringify(method)},
         headers: reqHeaders,
-        ...(reqBody !== undefined ? { body: reqBody } : {})
-      });
+        ...(reqBody !== undefined ? { body: reqBody } : {}),
+        signal: responseTimeout.start(),
+      }).finally(responseTimeout.clear);
       const text = await res.text();
       let data: any;
       try { data = JSON.parse(text); } catch { data = { raw: text }; }

@@ -222,6 +222,8 @@ Each object is downloaded in order and stored as base64 under the configured bin
 
 With `Send Headers` enabled, `specifyHeaders: 'json'` accepts either a JSON string or an object of header names and values.
 
+**Timeout** sets how long the HTTP node waits for the initial response in milliseconds. It defaults to 300,000 ms. The timer stops when the response headers arrive.
+
 ---
 
 ## 📚 Architecture Guides & Deep Dives
