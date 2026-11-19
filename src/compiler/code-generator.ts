@@ -181,8 +181,17 @@ ${nodeCode.trim()}
         ancestorTriggers.length > 0 ? '      ' : '    ');
     });
 
+    const inactiveNodes = new Set<string>();
+    for (const node of wf.orderedNodes) {
+      const incoming = node.incomingConnections ?? [];
+      // A branch with no reachable input cannot supply the workflow result.
+      if (disabledModes.get(node) === 'skip' ||
+          (incoming.length > 0 && incoming.every(connection => inactiveNodes.has(connection.sourceNode)))) {
+        inactiveNodes.add(node.name);
+      }
+    }
     const lastNodeName = wf.orderedNodes
-      .filter(node => disabledModes.get(node) !== 'skip' && (node.type !== stopAndErrorType || node.disabled))
+      .filter(node => !inactiveNodes.has(node.name) && (node.type !== stopAndErrorType || node.disabled))
       .at(-1)?.name;
     const returnItemsExpr = lastNodeName
       ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])`

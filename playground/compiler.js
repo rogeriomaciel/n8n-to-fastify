@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -1462,19 +1462,17 @@ ${legacyBinding}${execution}
     if (!node.disabled || workflow.triggers.includes(node) || node.type.toLowerCase().endsWith("trigger"))
       return;
     const outputs = Object.entries(workflow.connections[node.name] ?? {});
-    let hasOutgoing = false;
     for (const [type, ports] of outputs) {
       for (const [port, targets] of ports.entries()) {
         if (!targets?.length)
           continue;
         if (type !== "main" || port !== 0)
           return;
-        hasOutgoing = true;
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -1486,10 +1484,7 @@ ${legacyBinding}${execution}
         }
       }
     }
-    if (hasIncoming)
-      return "passthrough";
-    if (!hasOutgoing)
-      return "skip";
+    return hasIncoming ? "passthrough" : "skip";
   }
 
   // src/compiler/code-generator.ts
@@ -1622,7 +1617,14 @@ ${nodeCode.trim()}
         }
         bodyCode += this.generateNodeBlock(wf.id, node, branchCheckStr, nodeCode, ancestorTriggers.length > 0 ? "      " : "    ");
       });
-      const lastNodeName = wf.orderedNodes.filter((node) => disabledModes.get(node) !== "skip" && (node.type !== stopAndErrorType || node.disabled)).at(-1)?.name;
+      const inactiveNodes = new Set;
+      for (const node of wf.orderedNodes) {
+        const incoming = node.incomingConnections ?? [];
+        if (disabledModes.get(node) === "skip" || incoming.length > 0 && incoming.every((connection) => inactiveNodes.has(connection.sourceNode))) {
+          inactiveNodes.add(node.name);
+        }
+      }
+      const lastNodeName = wf.orderedNodes.filter((node) => !inactiveNodes.has(node.name) && (node.type !== stopAndErrorType || node.disabled)).at(-1)?.name;
       const returnItemsExpr = lastNodeName ? `(ctx.getNode(${JSON.stringify(lastNodeName)})?.all() || [{ json: item.json }])` : `inputItems`;
       const keys = Array.from(new Set([wf.id, wf.name, wf.fileName])).filter(Boolean);
       return `${imports}

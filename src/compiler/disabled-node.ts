@@ -6,12 +6,10 @@ export function getDisabledNodeMode(node: N8nNode, workflow: ParsedWorkflow): Di
   if (!node.disabled || workflow.triggers.includes(node) || node.type.toLowerCase().endsWith('trigger')) return;
 
   const outputs = Object.entries(workflow.connections[node.name] ?? {}) as Array<[string, N8nConnectionTarget[][]]>;
-  let hasOutgoing = false;
   for (const [type, ports] of outputs) {
     for (const [port, targets] of ports.entries()) {
       if (!targets?.length) continue;
       if (type !== 'main' || port !== 0) return;
-      hasOutgoing = true;
     }
   }
 
@@ -28,6 +26,5 @@ export function getDisabledNodeMode(node: N8nNode, workflow: ParsedWorkflow): Di
     }
   }
 
-  if (hasIncoming) return 'passthrough';
-  if (!hasOutgoing) return 'skip';
+  return hasIncoming ? 'passthrough' : 'skip';
 }
