@@ -61,11 +61,13 @@ export class NodeMappers {
     }
 
     if (type.includes('filter')) {
-      return this.mapFilterNode(ctx);
+      return ctx.node.typeVersion >= 2
+        ? this.mapConditionOutputs(ctx, 'filter')
+        : this.mapFilterNode(ctx);
     }
 
     if (type.includes('if')) {
-      return this.mapIfNode(ctx);
+      return this.mapConditionOutputs(ctx, 'if');
     }
 
     if (type.includes('switch')) {
@@ -259,8 +261,9 @@ ${legacyBinding}${execution}
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
   }
 
-  private static parseConditions(group: any, legacyFilter = false): string {
+  private static parseConditions(group: any, mode: 'branch' | 'filter' | 'legacy-filter' = 'branch'): string {
     const conditions: string[] = [];
+    const legacyFilter = mode === 'legacy-filter';
     const firstInputItem = legacyFilter ? undefined : 'firstInputItem';
 
     // n8n v2 conditions structure
@@ -273,6 +276,15 @@ ${legacyBinding}${execution}
           conditions.push(`Boolean(${left})`);
           continue;
         }
+        const looseBoolean = mode === 'filter' && group.options?.typeValidation === 'loose' &&
+          cond.operator?.type === 'boolean';
+        if (looseBoolean) {
+          const parseValue = Number(group.options.version) >= 2 ? 'parseLooseBoolean' : 'parseLegacyLooseBoolean';
+          left = `${parseValue}(${left})`;
+          if ((cond.operator.rightType ?? 'boolean') === 'boolean') {
+            right = `${parseValue}(${right})`;
+          }
+        }
         if (!legacyFilter && group.options?.caseSensitive === false && cond.operator?.type === 'string') {
           const lowerCase = "(value: unknown) => typeof value === 'string' ? value.toLowerCase() : value";
           left = `((${lowerCase})(${left}))`;
@@ -282,20 +294,20 @@ ${legacyBinding}${execution}
         switch (op) {
           case 'equals':
           case 'equal':
-            conditions.push(`(${left} == ${right})`);
+            conditions.push(`(${left} ${looseBoolean ? '===' : '=='} ${right})`);
             break;
           case 'notEquals':
           case 'notEqual':
-            conditions.push(`(${left} != ${right})`);
+            conditions.push(`(${left} ${looseBoolean ? '!==' : '!='} ${right})`);
             break;
           case 'contains':
             conditions.push(`String(${left} ?? '').includes(String(${right} ?? ''))`);
             break;
           case 'true':
-            conditions.push(`(${left} === true)`);
+            conditions.push(looseBoolean ? `Boolean(${left})` : `(${left} === true)`);
             break;
           case 'false':
-            conditions.push(`(${left} === false)`);
+            conditions.push(looseBoolean ? `(!${left})` : `(${left} === false)`);
             break;
           case 'gt':
           case 'larger':
@@ -331,7 +343,7 @@ ${legacyBinding}${execution}
 
   private static mapFilterNode(ctx: NodeMapperContext): string {
     const prevVar = ctx.previousVariableName || 'inputItems';
-    const conditionExpr = this.parseConditions(ctx.node.parameters?.conditions, true);
+    const conditionExpr = this.parseConditions(ctx.node.parameters?.conditions, 'legacy-filter');
 
     return `
     // [Node: ${ctx.node.name}] Filter
@@ -344,14 +356,36 @@ ${legacyBinding}${execution}
     }`;
   }
 
-  private static mapIfNode(ctx: NodeMapperContext): string {
+  private static mapConditionOutputs(ctx: NodeMapperContext, kind: 'filter' | 'if'): string {
     const prevVar = ctx.previousVariableName || 'inputItems';
-    const conditionExpr = this.parseConditions(ctx.node.parameters?.conditions);
+    const group = ctx.node.parameters?.conditions;
+    const conditionExpr = this.parseConditions(group, kind === 'filter' ? 'filter' : 'branch');
+    const label = kind === 'filter' ? 'Filter' : 'Conditional Branch (IF)';
+    const looseBooleanParser = kind === 'filter' && group?.options?.typeValidation === 'loose' &&
+      Array.isArray(group.conditions) && group.conditions.some((condition: any) => condition.operator?.type === 'boolean')
+      ? (Number(group.options.version) >= 2 ? `
+      const parseLooseBoolean = (value: unknown) => {
+        if (value == null || typeof value === 'boolean') return value;
+        if (typeof value === 'string') {
+          const lower = value.toLowerCase();
+          if (lower === 'true' || lower === 'false') return lower === 'true';
+          if (!value.trim()) return Boolean(value);
+        }
+        try {
+          const number = Number(value);
+          if (number === 0 || number === 1) return number === 1;
+        } catch {
+          // Loose validation falls back to truthiness when conversion fails.
+        }
+        return Boolean(value);
+      };` : `
+      const parseLegacyLooseBoolean = (value: unknown) => value == null ? value : Boolean(value);`)
+      : '';
 
     return `
-    // [Node: ${ctx.node.name}] Conditional Branch (IF)
+    // [Node: ${ctx.node.name}] ${label}
     ${ctx.variableName} = ${prevVar} || inputItems;
-    {
+    {${looseBooleanParser}
       const firstInputItem: N8nItem | undefined = ${ctx.variableName}[0];
       const outputs: N8nItem[][] = [[], []];
       for (const item of ${ctx.variableName} as N8nItem[]) {

@@ -309,7 +309,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -920,10 +920,10 @@
         return this.mapSubworkflowNode(ctx);
       }
       if (type.includes("filter")) {
-        return this.mapFilterNode(ctx);
+        return ctx.node.typeVersion >= 2 ? this.mapConditionOutputs(ctx, "filter") : this.mapFilterNode(ctx);
       }
       if (type.includes("if")) {
-        return this.mapIfNode(ctx);
+        return this.mapConditionOutputs(ctx, "if");
       }
       if (type.includes("switch")) {
         return this.mapSwitchNode(ctx);
@@ -1075,8 +1075,9 @@ ${legacyBinding}${execution}
     item = ${ctx.variableName}[0] || { json: {} };
     ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName});`;
     }
-    static parseConditions(group, legacyFilter = false) {
+    static parseConditions(group, mode = "branch") {
       const conditions = [];
+      const legacyFilter = mode === "legacy-filter";
       const firstInputItem = legacyFilter ? undefined : "firstInputItem";
       if (Array.isArray(group?.conditions)) {
         for (const cond of group.conditions) {
@@ -1087,6 +1088,14 @@ ${legacyBinding}${execution}
             conditions.push(`Boolean(${left})`);
             continue;
           }
+          const looseBoolean = mode === "filter" && group.options?.typeValidation === "loose" && cond.operator?.type === "boolean";
+          if (looseBoolean) {
+            const parseValue = Number(group.options.version) >= 2 ? "parseLooseBoolean" : "parseLegacyLooseBoolean";
+            left = `${parseValue}(${left})`;
+            if ((cond.operator.rightType ?? "boolean") === "boolean") {
+              right = `${parseValue}(${right})`;
+            }
+          }
           if (!legacyFilter && group.options?.caseSensitive === false && cond.operator?.type === "string") {
             const lowerCase = "(value: unknown) => typeof value === 'string' ? value.toLowerCase() : value";
             left = `((${lowerCase})(${left}))`;
@@ -1095,20 +1104,20 @@ ${legacyBinding}${execution}
           switch (op) {
             case "equals":
             case "equal":
-              conditions.push(`(${left} == ${right})`);
+              conditions.push(`(${left} ${looseBoolean ? "===" : "=="} ${right})`);
               break;
             case "notEquals":
             case "notEqual":
-              conditions.push(`(${left} != ${right})`);
+              conditions.push(`(${left} ${looseBoolean ? "!==" : "!="} ${right})`);
               break;
             case "contains":
               conditions.push(`String(${left} ?? '').includes(String(${right} ?? ''))`);
               break;
             case "true":
-              conditions.push(`(${left} === true)`);
+              conditions.push(looseBoolean ? `Boolean(${left})` : `(${left} === true)`);
               break;
             case "false":
-              conditions.push(`(${left} === false)`);
+              conditions.push(looseBoolean ? `(!${left})` : `(${left} === false)`);
               break;
             case "gt":
             case "larger":
@@ -1142,7 +1151,7 @@ ${legacyBinding}${execution}
     }
     static mapFilterNode(ctx) {
       const prevVar = ctx.previousVariableName || "inputItems";
-      const conditionExpr = this.parseConditions(ctx.node.parameters?.conditions, true);
+      const conditionExpr = this.parseConditions(ctx.node.parameters?.conditions, "legacy-filter");
       return `
     // [Node: ${ctx.node.name}] Filter
     ${ctx.variableName} = ${prevVar} || inputItems;
@@ -1153,13 +1162,32 @@ ${legacyBinding}${execution}
       ctx.setNodeOutput(${JSON.stringify(ctx.node.name)}, ${ctx.variableName}, activeIndex);
     }`;
     }
-    static mapIfNode(ctx) {
+    static mapConditionOutputs(ctx, kind) {
       const prevVar = ctx.previousVariableName || "inputItems";
-      const conditionExpr = this.parseConditions(ctx.node.parameters?.conditions);
+      const group = ctx.node.parameters?.conditions;
+      const conditionExpr = this.parseConditions(group, kind === "filter" ? "filter" : "branch");
+      const label = kind === "filter" ? "Filter" : "Conditional Branch (IF)";
+      const looseBooleanParser = kind === "filter" && group?.options?.typeValidation === "loose" && Array.isArray(group.conditions) && group.conditions.some((condition) => condition.operator?.type === "boolean") ? Number(group.options.version) >= 2 ? `
+      const parseLooseBoolean = (value: unknown) => {
+        if (value == null || typeof value === 'boolean') return value;
+        if (typeof value === 'string') {
+          const lower = value.toLowerCase();
+          if (lower === 'true' || lower === 'false') return lower === 'true';
+          if (!value.trim()) return Boolean(value);
+        }
+        try {
+          const number = Number(value);
+          if (number === 0 || number === 1) return number === 1;
+        } catch {
+          // Loose validation falls back to truthiness when conversion fails.
+        }
+        return Boolean(value);
+      };` : `
+      const parseLegacyLooseBoolean = (value: unknown) => value == null ? value : Boolean(value);` : "";
       return `
-    // [Node: ${ctx.node.name}] Conditional Branch (IF)
+    // [Node: ${ctx.node.name}] ${label}
     ${ctx.variableName} = ${prevVar} || inputItems;
-    {
+    {${looseBooleanParser}
       const firstInputItem: N8nItem | undefined = ${ctx.variableName}[0];
       const outputs: N8nItem[][] = [[], []];
       for (const item of ${ctx.variableName} as N8nItem[]) {
@@ -1473,8 +1501,8 @@ ${legacyBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
