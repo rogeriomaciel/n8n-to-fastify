@@ -38,6 +38,7 @@ export interface ParsedWorkflow {
   orderedNodes: N8nNode[];
   triggers: N8nNode[];
   pollingLoops?: PollingLoop[];
+  executionOrder?: 'v0' | 'v1';
 }
 
 /**
@@ -128,6 +129,7 @@ export class CoreWorkflowParser {
       orderedNodes,
       triggers,
       pollingLoops,
+      executionOrder: json.settings?.executionOrder,
     };
   }
 

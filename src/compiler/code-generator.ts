@@ -3,6 +3,7 @@ import { NodeMappers } from './mappers';
 import { emitPollingLoop } from './polling-code';
 import { getDisabledNodeMode } from './disabled-node';
 import { isPositionMerge } from './mappers/position-merge';
+import { planAppendBatches } from './append-batches';
 import { collectLegacyNodePorts, usesLegacyNodeReferences } from './mappers/code-context';
 import { isRawEditFields, usesRawLegacyNodeReferences } from './mappers/raw-edit-fields';
 import { rabbitMqPublisherType } from './mappers/rabbitmq';
@@ -67,10 +68,15 @@ export class CodeGenerator {
       ? `import { createWorkflowStopError } from '${runtimePrefix}/stop-and-error';\n`
       : '';
 
+    const appendPlan = planAppendBatches(wf);
+    const appendImport = appendPlan.merges.size
+      ? `import { AppendBatches } from '${runtimePrefix}/append-batches';\n`
+      : '';
+
     const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
-${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
+${appendImport}${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}
 ${legacyNames}
 const DateTime = {
   now: () => ({
@@ -82,6 +88,8 @@ const DateTime = {
 
     let declCode = '  let item: N8nItem = inputItems[0] || { json: {} };\n';
     let bodyCode = '  ctx.setNodeOutput("__initial__", inputItems);\n';
+
+    if (appendPlan.merges.size) bodyCode += '  const appendBatches = new AppendBatches(ctx);\n';
 
     const nodeVarMap = new Map<string, string>();
     wf.orderedNodes.forEach((node, index) => {
@@ -156,16 +164,41 @@ const DateTime = {
         branchCheckStr = `(${branchChecks.join(' || ')})`;
       }
 
+      const isAppend = appendPlan.merges.has(node.name);
+      const tracksBatches = appendPlan.tracked.has(node.name) && incoming.length > 0;
+      const nodeName = JSON.stringify(node.name);
       const prevExpr = runPerIncomingBatch ? 'incomingItems' : 'inputItems';
-      let nodeCode = mapNode(node, prevExpr);
-      if (runPerIncomingBatch) {
+      let nodeCode: string;
+      if (isAppend) {
+        const batches = `${varName}_batches`;
+        bodyCode += `  const ${batches} = appendBatches.append(
+    ${JSON.stringify(appendPlan.orderedEdges(node))}
+  );\n`;
+        branchCheckStr = `${batches}.length > 0`;
+        nodeCode = `await appendBatches.run(${nodeName}, ${batches}, async (incomingItems) => {
+  ${varName} = incomingItems;
+  item = ${varName}[0] || { json: {} };
+  ctx.setNodeOutput(${nodeName}, ${varName});
+});`;
+      } else if (tracksBatches && runPerIncomingBatch) {
+        const edges = JSON.stringify(appendPlan.orderedEdges(node));
+        nodeCode = `await appendBatches.run(${nodeName}, appendBatches.inputs(${edges}), async (incomingItems) => {
+${mapNode(node, prevExpr).trim()}
+});`;
+      } else if (runPerIncomingBatch) {
         const batches = incoming.map(
           conn => `ctx.getNodeOutputBatches(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`
         );
         // Keep the mapper body's original indentation, including multiline literals.
         nodeCode = `await ctx.runNodeBatches(${JSON.stringify(node.name)}, [${batches.join(', ')}].flat(), async (incomingItems) => {
-${nodeCode.trim()}
+${mapNode(node, prevExpr).trim()}
 });`;
+      } else {
+        nodeCode = mapNode(node, prevExpr);
+        if (tracksBatches) {
+          const edges = JSON.stringify(appendPlan.orderedEdges(node));
+          nodeCode += `\nappendBatches.recordMergedOutput(${nodeName}, ${edges});`;
+        }
       }
 
       const ancestorTriggers = node.ancestorTriggers ?? [];

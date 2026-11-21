@@ -171,6 +171,10 @@ export class WorkflowContext {
     this.activeBranches.get(nodeName)!.add(outputIndex);
   }
 
+  public getActiveOutputIndexes(nodeName: string): Iterable<number> {
+    return this.activeBranches.get(nodeName) ?? [];
+  }
+
   public isBranchActive(nodeName: string, outputIndex: number): boolean {
     return this.activeBranches.get(nodeName)?.has(outputIndex) ?? false;
   }
