@@ -25,22 +25,31 @@ export function mapPositionMerge(ctx: NodeMapperContext): string {
 
   const params = ctx.node.parameters;
   const portCount = params.numberInputs ?? 2;
-  const sources = Array.from({ length: portCount }, () => [] as string[]);
-  for (const { sourceNode, outputIndex, inputIndex = 0 } of ctx.node.incomingConnections ?? []) {
-    sources[inputIndex].push(`ctx.getNodeOutput(${JSON.stringify(sourceNode)}, ${outputIndex}) || []`);
-  }
-  const inputs = sources.map(port => `[${port.join(', ')}].flat()`);
   const options = params.options ?? {};
   const includeUnpaired = ExpressionParser.parse(options.includeUnpaired ?? false);
-
-  return `
-    {
-      const inputs: N8nItem[][] = [${inputs.join(', ')}];
+  const nodeName = JSON.stringify(ctx.node.name);
+  const merge = `
       const merged = ((item: N8nItem) => mergeByPosition(
         inputs, Boolean(${includeUnpaired}), ${JSON.stringify(options.clashHandling?.values ?? {})},
       ))(inputs[0][0] || { json: {} });
       ${ctx.variableName} = merged;
       item = merged[0] || { json: {} };
-      ctx.setNodeOutputs(${JSON.stringify(ctx.node.name)}, [[0, merged]], merged);
+      ctx.setNodeOutputs(${nodeName}, [[0, merged]], merged);`;
+
+  if (ctx.positionMergeEdges) {
+    return `
+    await appendBatches.runMerge(${nodeName}, ${JSON.stringify(ctx.positionMergeEdges)}, async (received) => {
+      const inputs = Array.from({ length: ${portCount} }, (_, port) => received[port] ?? []);${merge}
+    });`;
+  }
+
+  const sources = Array.from({ length: portCount }, () => [] as string[]);
+  for (const { sourceNode, outputIndex, inputIndex = 0 } of ctx.node.incomingConnections ?? []) {
+    sources[inputIndex].push(`ctx.getNodeOutput(${JSON.stringify(sourceNode)}, ${outputIndex}) || []`);
+  }
+  const inputs = sources.map(port => `[${port.join(', ')}].flat()`);
+  return `
+    {
+      const inputs: N8nItem[][] = [${inputs.join(', ')}];${merge}
     }`;
 }

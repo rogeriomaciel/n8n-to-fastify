@@ -335,7 +335,7 @@
       const schedule = pollingLoops.length ? projectPollingSchedule(nodes, connections, pollingLoops) : { nodes, connections };
       const entryGroups = new Map(pollingLoops.map((loop) => [loop.entry, loop.nodes]));
       const nodeByName = new Map(nodes.map((node) => [node.name, node]));
-      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name2) => nodeByName.get(name2)) ?? [node]);
+      const orderedNodes = this.topologicalSort(schedule.nodes, schedule.connections).flatMap((node) => entryGroups.get(node.name)?.map((name) => nodeByName.get(name)) ?? [node]);
       return {
         id,
         name,
@@ -345,7 +345,8 @@
         connections,
         orderedNodes,
         triggers,
-        pollingLoops
+        pollingLoops,
+        executionOrder: json.settings?.executionOrder
       };
     }
     static topologicalSort(nodes, connections) {
@@ -740,22 +741,30 @@
       throw new Error(`Node ${JSON.stringify(ctx.node.name)}: ${issue}`);
     const params = ctx.node.parameters;
     const portCount = params.numberInputs ?? 2;
-    const sources = Array.from({ length: portCount }, () => []);
-    for (const { sourceNode, outputIndex, inputIndex = 0 } of ctx.node.incomingConnections ?? []) {
-      sources[inputIndex].push(`ctx.getNodeOutput(${JSON.stringify(sourceNode)}, ${outputIndex}) || []`);
-    }
-    const inputs = sources.map((port) => `[${port.join(", ")}].flat()`);
     const options = params.options ?? {};
     const includeUnpaired = ExpressionParser.parse(options.includeUnpaired ?? false);
-    return `
-    {
-      const inputs: N8nItem[][] = [${inputs.join(", ")}];
+    const nodeName = JSON.stringify(ctx.node.name);
+    const merge = `
       const merged = ((item: N8nItem) => mergeByPosition(
         inputs, Boolean(${includeUnpaired}), ${JSON.stringify(options.clashHandling?.values ?? {})},
       ))(inputs[0][0] || { json: {} });
       ${ctx.variableName} = merged;
       item = merged[0] || { json: {} };
-      ctx.setNodeOutputs(${JSON.stringify(ctx.node.name)}, [[0, merged]], merged);
+      ctx.setNodeOutputs(${nodeName}, [[0, merged]], merged);`;
+    if (ctx.positionMergeEdges) {
+      return `
+    await appendBatches.runMerge(${nodeName}, ${JSON.stringify(ctx.positionMergeEdges)}, async (received) => {
+      const inputs = Array.from({ length: ${portCount} }, (_, port) => received[port] ?? []);${merge}
+    });`;
+    }
+    const sources = Array.from({ length: portCount }, () => []);
+    for (const { sourceNode, outputIndex, inputIndex = 0 } of ctx.node.incomingConnections ?? []) {
+      sources[inputIndex].push(`ctx.getNodeOutput(${JSON.stringify(sourceNode)}, ${outputIndex}) || []`);
+    }
+    const inputs = sources.map((port) => `[${port.join(", ")}].flat()`);
+    return `
+    {
+      const inputs: N8nItem[][] = [${inputs.join(", ")}];${merge}
     }`;
   }
 
@@ -1940,11 +1949,15 @@ ${legacyBinding}${inputBinding}${itemsBinding}${execution}
   }
 
   // src/compiler/polling-code.ts
-  function emitPollingLoop(loop, nodes, mapNode, wrapNode) {
+  function emitPollingLoop(loop, nodes, mapNode, wrapNode, trackedEdges) {
     const { entry, terminalExits, repeatPort, ...runtimePlan } = loop;
     const entryNode = nodes.get(entry);
     const initial = entryNode.incomingConnections.find((connection) => !loop.nodes.includes(connection.sourceNode));
-    const inputBatches = "ctx.getNodeOutputBatches(" + JSON.stringify(initial.sourceNode) + ", " + initial.outputIndex + ")";
+    const trackedEntry = trackedEdges?.(entryNode).find((edge) => edge.source === initial.sourceNode && edge.output === initial.outputIndex);
+    const retryTarget = loop.nodes[(loop.nodes.indexOf(loop.decision) + 1) % loop.nodes.length];
+    const trackedRetry = trackedEdges?.(nodes.get(retryTarget)).find((edge) => edge.source === loop.decision && edge.output === repeatPort);
+    const runner = trackedEntry ? "appendBatches.runPollingLoop" : "ctx.runPollingLoop";
+    const inputArgs = trackedEntry ? `${JSON.stringify(trackedEntry)}, ${trackedRetry.priority}` : "ctx.getNodeOutputBatches(" + JSON.stringify(initial.sourceNode) + ", " + initial.outputIndex + ")";
     let body = "";
     for (const [index, name] of loop.nodes.entries()) {
       const node = nodes.get(name);
@@ -1969,7 +1982,7 @@ ${legacyBinding}${inputBinding}${itemsBinding}${execution}
       body += "    if (ctx.getNodeOutput(" + JSON.stringify(name) + ", " + repeatPort + `)?.length) assertCanRetry();
 `;
     }
-    return "  await ctx.runPollingLoop(" + JSON.stringify(runtimePlan) + ", " + inputBatches + `, async (pollingItems, assertCanRetry) => {
+    return "  await " + runner + "(" + JSON.stringify(runtimePlan) + ", " + inputArgs + `, async (pollingItems, assertCanRetry) => {
 ` + body + `  });
 `;
   }
@@ -1988,8 +2001,8 @@ ${legacyBinding}${inputBinding}${itemsBinding}${execution}
       }
     }
     let hasIncoming = false;
-    for (const outputs2 of Object.values(workflow.connections)) {
-      for (const [type, ports] of Object.entries(outputs2)) {
+    for (const outputs of Object.values(workflow.connections)) {
+      for (const [type, ports] of Object.entries(outputs)) {
         for (const targets of ports) {
           for (const target of targets ?? []) {
             if (target?.node !== node.name)
@@ -2002,6 +2015,65 @@ ${legacyBinding}${inputBinding}${itemsBinding}${execution}
       }
     }
     return hasIncoming ? "passthrough" : "skip";
+  }
+
+  // src/compiler/append-batches.ts
+  function planAppendBatches(workflow) {
+    const merges = new Set(workflow.executionOrder === "v1" ? workflow.nodes.filter((node) => node.type === "n8n-nodes-base.merge" && !node.disabled && (node.parameters?.mode ?? "append") === "append" && node.incomingConnections?.length).map((node) => node.name) : []);
+    const tracked = new Set;
+    const nodes = new Map(workflow.nodes.map((node) => [node.name, node]));
+    const visit = (name) => {
+      if (tracked.has(name))
+        return;
+      tracked.add(name);
+      for (const edge of nodes.get(name)?.incomingConnections ?? [])
+        visit(edge.sourceNode);
+    };
+    merges.forEach(visit);
+    const edges = new Map;
+    for (const [fallback, source] of workflow.orderedNodes.entries()) {
+      if (!tracked.has(source.name))
+        continue;
+      const outputs = workflow.connections[source.name]?.main;
+      if (!Array.isArray(outputs))
+        continue;
+      const outgoing = [];
+      for (const [output, targets] of outputs.entries()) {
+        if (!Array.isArray(targets))
+          continue;
+        for (const connection of targets) {
+          const target = nodes.get(connection?.node);
+          if (target)
+            outgoing.push({ target, output, input: connection.index ?? 0 });
+        }
+      }
+      outgoing.sort((a, b) => {
+        const [ax, ay] = a.target.position ?? [0, 0];
+        const [bx, by] = b.target.position ?? [0, 0];
+        return by - ay || (ax > bx ? -1 : 0);
+      });
+      for (const [index, edge] of outgoing.entries()) {
+        if (!tracked.has(edge.target.name))
+          continue;
+        const incoming = edges.get(edge.target.name) ?? [];
+        incoming.push({
+          source: source.name,
+          output: edge.output,
+          input: edge.input,
+          priority: outgoing.length - 1 - index,
+          fallback
+        });
+        edges.set(edge.target.name, incoming);
+      }
+    }
+    const orderedEdges = (node) => {
+      const remaining = [...edges.get(node.name) ?? []];
+      return (node.incomingConnections ?? []).map(({ sourceNode, outputIndex, inputIndex = 0 }) => {
+        const index = remaining.findIndex((edge) => edge.source === sourceNode && edge.output === outputIndex && edge.input === inputIndex);
+        return index < 0 ? undefined : remaining.splice(index, 1)[0];
+      }).filter((edge) => edge !== undefined);
+    };
+    return { merges, tracked, orderedEdges };
   }
 
   // src/compiler/code-generator.ts
@@ -2075,10 +2147,13 @@ ${legacyBinding}${inputBinding}${itemsBinding}${execution}
       const retryNodes = wf.nodes.filter((node) => !node.disabled && usesNodeRetry(node));
       const retryImport = retryNodes.length > 0 ? `import { runWithNodeRetry${retryNodes.some((node) => node.type === "n8n-nodes-base.httpRequest") ? ", settleRetryRequests" : ""} } from '${runtimePrefix}/node-retry';
 ` : "";
+      const appendPlan = planAppendBatches(wf);
+      const appendImport = appendPlan.merges.size ? `import { AppendBatches } from '${runtimePrefix}/append-batches';
+` : "";
       const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
-${retryImport}${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}${llmImport}${integrationsImport}
+${appendImport}${retryImport}${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}${llmImport}${integrationsImport}
 ${legacyNames}
 const DateTime = {
   now: () => ({
@@ -2090,6 +2165,9 @@ const DateTime = {
       let declCode = `  let item: N8nItem = inputItems[0] || { json: {} };
 `;
       let bodyCode = `  ctx.setNodeOutput("__initial__", inputItems);
+`;
+      if (appendPlan.merges.size)
+        bodyCode += `  const appendBatches = new AppendBatches(ctx);
 `;
       const nodeVarMap = new Map;
       wf.orderedNodes.forEach((node, index) => {
@@ -2103,7 +2181,7 @@ const DateTime = {
       const loops = wf.pollingLoops ?? [];
       const loopsByMember = new Map(loops.flatMap((loop) => loop.nodes.map((name) => [name, loop])));
       const terminalNames = new Set(loops.flatMap((loop) => loop.terminalExits.map((exit) => exit.target)));
-      const mapNode = (node, previousVariableName) => {
+      const mapNode = (node, previousVariableName, positionMergeEdges) => {
         const varName = nodeVarMap.get(node.name);
         return disabledModes.get(node) === "passthrough" ? `
     ${varName} = ${previousVariableName} || [];
@@ -2113,6 +2191,7 @@ const DateTime = {
           workflowName: wf.name,
           variableName: varName,
           previousVariableName,
+          positionMergeEdges,
           legacyNodePorts: legacyNodes.has(node) ? collectLegacyNodePorts(node, nodesByName) : undefined
         });
       };
@@ -2144,7 +2223,9 @@ ctx.setNodeOutput(${nodeName}, inputItems);`;
         const loop = loopsByMember.get(node.name);
         if (loop) {
           if (node.name === loop.entry) {
-            bodyCode += emitPollingLoop(loop, nodesByName, mapNode, (member, condition, code) => this.generateNodeBlock(wf.id, member, condition, code));
+            const trackedEdges = appendPlan.tracked.has(loop.decision) ? appendPlan.orderedEdges : undefined;
+            const wrapLoopNode = (member, condition, code) => this.generateNodeBlock(wf.id, member, condition, code);
+            bodyCode += emitPollingLoop(loop, nodesByName, mapNode, wrapLoopNode, trackedEdges);
           }
           return;
         }
@@ -2157,13 +2238,41 @@ ctx.setNodeOutput(${nodeName}, inputItems);`;
           const branchChecks = incoming.map((conn) => `ctx.isBranchActive(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`);
           branchCheckStr = `(${branchChecks.join(" || ")})`;
         }
+        const isAppend = appendPlan.merges.has(node.name);
+        const tracksBatches = appendPlan.tracked.has(node.name) && incoming.length > 0;
+        const nodeName = JSON.stringify(node.name);
         const prevExpr = runPerIncomingBatch ? "incomingItems" : "inputItems";
-        let nodeCode = mapNode(node, prevExpr);
-        if (runPerIncomingBatch) {
+        let nodeCode;
+        if (isAppend) {
+          const batches = `${varName}_batches`;
+          bodyCode += `  const ${batches} = appendBatches.append(
+    ${JSON.stringify(appendPlan.orderedEdges(node))}
+  );
+`;
+          branchCheckStr = `${batches}.length > 0`;
+          nodeCode = `await appendBatches.run(${nodeName}, ${batches}, async (incomingItems) => {
+  ${varName} = incomingItems;
+  item = ${varName}[0] || { json: {} };
+  ctx.setNodeOutput(${nodeName}, ${varName});
+});`;
+        } else if (tracksBatches && runPerIncomingBatch) {
+          const edges = JSON.stringify(appendPlan.orderedEdges(node));
+          nodeCode = `await appendBatches.run(${nodeName}, appendBatches.inputs(${edges}), async (incomingItems) => {
+${mapNode(node, prevExpr).trim()}
+});`;
+        } else if (runPerIncomingBatch) {
           const batches = incoming.map((conn) => `ctx.getNodeOutputBatches(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`);
           nodeCode = `await ctx.runNodeBatches(${JSON.stringify(node.name)}, [${batches.join(", ")}].flat(), async (incomingItems) => {
-${nodeCode.trim()}
+${mapNode(node, prevExpr).trim()}
 });`;
+        } else {
+          const edges = tracksBatches ? appendPlan.orderedEdges(node) : undefined;
+          const positionMergeEdges = isPositionMerge(node) ? edges : undefined;
+          nodeCode = mapNode(node, prevExpr, positionMergeEdges);
+          if (edges && !positionMergeEdges) {
+            nodeCode += `
+appendBatches.recordMergedOutput(${nodeName}, ${JSON.stringify(edges)});`;
+          }
         }
         const ancestorTriggers = node.ancestorTriggers ?? [];
         if (ancestorTriggers.length > 0) {

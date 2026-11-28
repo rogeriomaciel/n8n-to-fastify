@@ -1,3 +1,4 @@
+import type { BatchEdge } from '../../runtime/append-batches';
 import { N8nNode } from '../parser';
 import { ExpressionParser } from '../expression-parser';
 import { isPositionMerge, mapPositionMerge } from './position-merge';
@@ -20,6 +21,7 @@ export interface NodeMapperContext {
   variableName: string;
   previousVariableName?: string;
   legacyNodePorts?: Array<[string, number]>;
+  positionMergeEdges?: BatchEdge[];
 }
 
 /**

@@ -9,7 +9,7 @@ export interface NodeAccessor {
   all: () => N8nItem[];
 }
 
-interface PollingRun {
+export interface PollingRun {
   nodes: string[];
   decision: string;
   backEdge: { source: string; output: number };
@@ -166,6 +166,7 @@ export class WorkflowContext {
     plan: PollingRun,
     initialBatches: N8nItem[][],
     runAttempt: (items: N8nItem[], assertCanRetry: () => void) => Promise<void>,
+    onExit?: (port: number, inputIndex: number, attempt: number) => void,
   ): Promise<void> {
     if (!initialBatches.some(batch => batch.length)) return;
     const limit = Number(process.env.N8N_TO_FASTIFY_POLL_MAX_ATTEMPTS ?? 100);
@@ -175,7 +176,7 @@ export class WorkflowContext {
 
     const exits = new Map<number, N8nItem[][]>();
     const completed: N8nItem[][] = [];
-    for (const initial of initialBatches) {
+    for (const [inputIndex, initial] of initialBatches.entries()) {
       let pending = initial;
       let attempt = 0;
       const assertCanRetry = () => {
@@ -195,6 +196,7 @@ export class WorkflowContext {
           if (!exits.has(port)) exits.set(port, []);
           exits.get(port)!.push(items);
           completed.push(items);
+          onExit?.(port, inputIndex, attempt);
         }
         pending = this.getNodeOutput(plan.backEdge.source, plan.backEdge.output) ?? [];
       }
@@ -220,6 +222,10 @@ export class WorkflowContext {
       this.activeBranches.set(nodeName, new Set());
     }
     this.activeBranches.get(nodeName)!.add(outputIndex);
+  }
+
+  public getActiveOutputIndexes(nodeName: string): Iterable<number> {
+    return this.activeBranches.get(nodeName) ?? [];
   }
 
   public isBranchActive(nodeName: string, outputIndex: number): boolean {

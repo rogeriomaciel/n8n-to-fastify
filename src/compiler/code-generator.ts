@@ -1,3 +1,4 @@
+import type { BatchEdge } from '../runtime/append-batches';
 import { usesNodeRetry } from './mappers/node-retry';
 import { N8nNode, ParsedWorkflow } from './parser';
 import { postgresTriggerType } from './postgres-trigger';
@@ -5,6 +6,7 @@ import { NodeMappers } from './mappers';
 import { emitPollingLoop } from './polling-code';
 import { getDisabledNodeMode } from './disabled-node';
 import { isPositionMerge } from './mappers/position-merge';
+import { planAppendBatches } from './append-batches';
 import { collectLegacyNodePorts, usesLegacyNodeReferences } from './mappers/code-context';
 import { isRawEditFields, usesRawLegacyNodeReferences } from './mappers/raw-edit-fields';
 import { rabbitMqPublisherType } from './mappers/rabbitmq';
@@ -117,10 +119,15 @@ export class CodeGenerator {
       ? `import { runWithNodeRetry${retryNodes.some(node => node.type === 'n8n-nodes-base.httpRequest') ? ', settleRetryRequests' : ''} } from '${runtimePrefix}/node-retry';\n`
       : '';
 
+    const appendPlan = planAppendBatches(wf);
+    const appendImport = appendPlan.merges.size
+      ? `import { AppendBatches } from '${runtimePrefix}/append-batches';\n`
+      : '';
+
     const imports = `import { WorkflowContext } from '${runtimePrefix}/workflow-context';
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
-${retryImport}${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}${llmImport}${integrationsImport}
+${appendImport}${retryImport}${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}${llmImport}${integrationsImport}
 ${legacyNames}
 const DateTime = {
   now: () => ({
@@ -132,6 +139,8 @@ const DateTime = {
 
     let declCode = '  let item: N8nItem = inputItems[0] || { json: {} };\n';
     let bodyCode = '  ctx.setNodeOutput("__initial__", inputItems);\n';
+
+    if (appendPlan.merges.size) bodyCode += '  const appendBatches = new AppendBatches(ctx);\n';
 
     const nodeVarMap = new Map<string, string>();
     wf.orderedNodes.forEach((node, index) => {
@@ -148,7 +157,7 @@ const DateTime = {
     const loops = wf.pollingLoops ?? [];
     const loopsByMember = new Map(loops.flatMap(loop => loop.nodes.map(name => [name, loop] as const)));
     const terminalNames = new Set(loops.flatMap(loop => loop.terminalExits.map(exit => exit.target)));
-    const mapNode = (node: N8nNode, previousVariableName: string) => {
+    const mapNode = (node: N8nNode, previousVariableName: string, positionMergeEdges?: BatchEdge[]) => {
       const varName = nodeVarMap.get(node.name)!;
       return disabledModes.get(node) === 'passthrough'
         ? `
@@ -160,6 +169,7 @@ const DateTime = {
             workflowName: wf.name,
             variableName: varName,
             previousVariableName,
+            positionMergeEdges,
             legacyNodePorts: legacyNodes.has(node) ? collectLegacyNodePorts(node, nodesByName) : undefined,
           });
     };
@@ -189,9 +199,10 @@ const DateTime = {
       const loop = loopsByMember.get(node.name);
       if (loop) {
         if (node.name === loop.entry) {
-          bodyCode += emitPollingLoop(loop, nodesByName, mapNode, (member, condition, code) =>
-            this.generateNodeBlock(wf.id, member, condition, code)
-          );
+          const trackedEdges = appendPlan.tracked.has(loop.decision) ? appendPlan.orderedEdges : undefined;
+          const wrapLoopNode = (member: N8nNode, condition: string, code: string) =>
+            this.generateNodeBlock(wf.id, member, condition, code);
+          bodyCode += emitPollingLoop(loop, nodesByName, mapNode, wrapLoopNode, trackedEdges);
         }
         return;
       }
@@ -209,16 +220,42 @@ const DateTime = {
         branchCheckStr = `(${branchChecks.join(' || ')})`;
       }
 
+      const isAppend = appendPlan.merges.has(node.name);
+      const tracksBatches = appendPlan.tracked.has(node.name) && incoming.length > 0;
+      const nodeName = JSON.stringify(node.name);
       const prevExpr = runPerIncomingBatch ? 'incomingItems' : 'inputItems';
-      let nodeCode = mapNode(node, prevExpr);
-      if (runPerIncomingBatch) {
+      let nodeCode: string;
+      if (isAppend) {
+        const batches = `${varName}_batches`;
+        bodyCode += `  const ${batches} = appendBatches.append(
+    ${JSON.stringify(appendPlan.orderedEdges(node))}
+  );\n`;
+        branchCheckStr = `${batches}.length > 0`;
+        nodeCode = `await appendBatches.run(${nodeName}, ${batches}, async (incomingItems) => {
+  ${varName} = incomingItems;
+  item = ${varName}[0] || { json: {} };
+  ctx.setNodeOutput(${nodeName}, ${varName});
+});`;
+      } else if (tracksBatches && runPerIncomingBatch) {
+        const edges = JSON.stringify(appendPlan.orderedEdges(node));
+        nodeCode = `await appendBatches.run(${nodeName}, appendBatches.inputs(${edges}), async (incomingItems) => {
+${mapNode(node, prevExpr).trim()}
+});`;
+      } else if (runPerIncomingBatch) {
         const batches = incoming.map(
           conn => `ctx.getNodeOutputBatches(${JSON.stringify(conn.sourceNode)}, ${conn.outputIndex})`
         );
         // Keep the mapper body's original indentation, including multiline literals.
         nodeCode = `await ctx.runNodeBatches(${JSON.stringify(node.name)}, [${batches.join(', ')}].flat(), async (incomingItems) => {
-${nodeCode.trim()}
+${mapNode(node, prevExpr).trim()}
 });`;
+      } else {
+        const edges = tracksBatches ? appendPlan.orderedEdges(node) : undefined;
+        const positionMergeEdges = isPositionMerge(node) ? edges : undefined;
+        nodeCode = mapNode(node, prevExpr, positionMergeEdges);
+        if (edges && !positionMergeEdges) {
+          nodeCode += `\nappendBatches.recordMergedOutput(${nodeName}, ${JSON.stringify(edges)});`;
+        }
       }
 
       const ancestorTriggers = node.ancestorTriggers ?? [];
