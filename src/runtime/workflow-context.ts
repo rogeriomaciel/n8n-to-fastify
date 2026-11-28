@@ -233,7 +233,8 @@ export class WorkflowContext {
   public getNode(nodeName: string): NodeAccessor {
     const items = this.nodeOutputs.get(nodeName) || [];
     return {
-      isExecuted: this.hasExecutedNode(nodeName),
+      // Polling clears per-attempt outputs, but recorded runs span the invocation.
+      isExecuted: this.nodeRuns.has(nodeName),
       item: items[0],
       first: () => items[0],
       all: () => items,

@@ -11,7 +11,12 @@ const node = (name: string, type: string, parameters: object, typeVersion = 1) =
   ({ name, type: 'n8n-nodes-base.' + type, parameters, typeVersion });
 
 function fixture(origin: string, secondCycle: boolean) {
-  const nodes = [node('Source', 'code', pass), node('Finish', 'code', pass)];
+  const nodes = [
+    node('Source', 'code', pass),
+    node('Finish', 'code', { jsCode: `return $input.all().map(({ json }) => ({
+      json: { ...json, waited: $('Wait').isExecuted },
+    }));` }),
+  ];
   const connections: Record<string, { main: ReturnType<typeof target>[] }> = { Source: { main: [target('Prepare')] } };
   const rule = (value: string) => ({ conditions: { conditions: [{
     leftValue: '={{ $json.state }}', rightValue: value, operator: { type: 'string', operation: 'equals' },
@@ -99,6 +104,17 @@ test('a ready item exits on the first attempt', async () => {
   await withCompiledPolling({}, async (run, requests) => {
     expect((await run([{ json: { id: 'fast' } }])).items.map(item => item.json.id)).toEqual(['fast']);
     expect(requests).toEqual(['first/fast']);
+  });
+});
+
+test('a polling retry remains executed after the final attempt skips it', async () => {
+  await withCompiledPolling({}, async (run, requests) => {
+    const slow = await run([{ json: { id: 'slow' } }]);
+    expect(slow.items[0].json.waited).toBe(true);
+    expect(slow.context.getNodeOutput('Wait', 0)).toBeUndefined();
+    const fast = await run([{ json: { id: 'fast' } }]);
+    expect(fast.items[0].json.waited).toBe(false);
+    expect(requests).toEqual(['first/slow', 'first/slow', 'first/slow', 'first/fast']);
   });
 });
 

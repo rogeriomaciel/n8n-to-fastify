@@ -1,7 +1,7 @@
 import { N8nNode } from '../parser';
 import { ExpressionParser } from '../expression-parser';
 import { isPositionMerge, mapPositionMerge } from './position-merge';
-import { getLegacyNodeReferenceIssue } from './code-context';
+import { getLegacyNodeReferenceIssue, isCodeNode } from './code-context';
 import { continuesSwitchOnRegularOutput } from './switch-errors';
 import { continuesCodeOnRegularOutput } from './code-errors';
 import { getRawEditFieldsIssue, isRawEditFields, mapRawEditFields } from './raw-edit-fields';
@@ -50,7 +50,7 @@ export class NodeMappers {
       return this.mapRespondToWebhookNode(ctx);
     }
 
-    if (type.includes('code') || type.includes('function')) {
+    if (isCodeNode(ctx.node)) {
       return this.mapCodeNode(ctx);
     }
 
@@ -186,7 +186,7 @@ export class NodeMappers {
     const rawCode = params.jsCode || params.functionCode || 'return $input.all();';
     const prevVar = ctx.previousVariableName || 'inputItems';
     const legacyBinding = ctx.legacyNodePorts
-      ? `      const $node = createLegacyNodeReferences(ctx, legacyNodeNames, ${JSON.stringify(ctx.legacyNodePorts)});\n`
+      ? `      const $node = createLegacyNodeReferences(ctx, workflowNodeNames, ${JSON.stringify(ctx.legacyNodePorts)});\n`
       : '';
 
     const legacyItemsBinding = /\$items\b/.test(rawCode)
@@ -201,9 +201,6 @@ export class NodeMappers {
       .replace(/\$input\.first\(\)/g, '(currentItems[0] || { json: {} })')
       .replace(/\$input\.item/g, '(currentItems[0] || { json: {} })')
       .replace(/\$json/g, '(currentItems[0]?.json || {})')
-      .replace(/\$\(['"](.*?)['"]\)\.first\(\)/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.first() || { json: {} })`)
-      .replace(/\$\(['"](.*?)['"]\)\.item/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.item || { json: {} })`)
-      .replace(/\$\(['"](.*?)['"]\)\.all\(\)/g, (_: string, n: string) => `(ctx.getNode(${JSON.stringify(n)})?.all() || [])`)
       .replace(/\$now/g, 'DateTime.now()');
 
     const inputBinding = /\$input\b/.test(rawCode) ? `      const $input = {
@@ -230,7 +227,16 @@ ${legacyItemsBinding}      const result = await (async () => {
     // [Node: ${ctx.node.name}] Code Execution
     ${ctx.variableName} = await (async () => {
       const currentItems = ${prevVar} || inputItems;
-      const $ = (nodeName: string) => ctx.getNode(nodeName);
+      const $ = (nodeName: string) => {
+        if (!workflowNodeNames.has(nodeName)) throw new Error("Referenced node doesn't exist");
+        const target = ctx.getNode(nodeName);
+        return {
+          isExecuted: target.isExecuted,
+          first: () => target.first() ?? { json: {} },
+          item: target.item ?? { json: {} },
+          all: target.all,
+        };
+      };
 ${legacyBinding}${inputBinding}${itemsBinding}${execution}
     })();
     item = ${ctx.variableName}[0] || { json: {} };
@@ -562,7 +568,7 @@ ${legacyBinding}${inputBinding}${itemsBinding}${execution}
     const multipart = usesMultipartBody(params);
     const jsonHeaders = usesJsonHeaders(params);
     const legacyBinding = (index: string): string => ctx.legacyNodePorts
-      ? `const $node = createLegacyNodeReferences(ctx, legacyNodeNames, ${JSON.stringify(ctx.legacyNodePorts)}, ${index}, batch);`
+      ? `const $node = createLegacyNodeReferences(ctx, workflowNodeNames, ${JSON.stringify(ctx.legacyNodePorts)}, ${index}, batch);`
       : '';
     // HTTP Request v1/v2 serialized Never Error as Ignore Response Code.
     const legacyIgnoreError = (ctx.node.typeVersion ?? 1) < 3 ? params.options?.ignoreResponseCode : undefined;

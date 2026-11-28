@@ -5,7 +5,7 @@ import { NodeMappers } from './mappers';
 import { emitPollingLoop } from './polling-code';
 import { getDisabledNodeMode } from './disabled-node';
 import { isPositionMerge } from './mappers/position-merge';
-import { collectLegacyNodePorts, usesLegacyNodeReferences } from './mappers/code-context';
+import { collectLegacyNodePorts, isCodeNode, usesLegacyNodeReferences } from './mappers/code-context';
 import { isRawEditFields, usesRawLegacyNodeReferences } from './mappers/raw-edit-fields';
 import { rabbitMqPublisherType } from './mappers/rabbitmq';
 import { s3NodeType } from './mappers/s3';
@@ -43,8 +43,8 @@ export class CodeGenerator {
     const legacyImport = legacyNodes.size > 0
       ? `import { createLegacyNodeReferences } from '${runtimePrefix}/code-context';\n`
       : '';
-    const legacyNames = legacyNodes.size > 0
-      ? `const legacyNodeNames = new Set<string>(${JSON.stringify(wf.nodes.map(node => node.name))});\n`
+    const workflowNodeNames = legacyNodes.size > 0 || wf.nodes.some(isCodeNode)
+      ? `const workflowNodeNames = new Set<string>(${JSON.stringify(wf.nodes.map(node => node.name))});\n`
       : '';
     const nodesByName = new Map(wf.nodes.map(node => [node.name, node]));
     const rabbitMqImport = wf.nodes.some((node) => node.type === rabbitMqPublisherType)
@@ -121,7 +121,7 @@ export class CodeGenerator {
 import { n8n, N8nItem } from '${runtimePrefix}/n8n-helper';
 import { executeSubworkflow, registerWorkflow } from '${runtimePrefix}/workflow-registry';
 ${retryImport}${positionMergeImport}${legacyImport}${rawFieldsImport}${rabbitMqImport}${s3Import}${compressionImport}${jsonFileImport}${httpRequestImport}${waitImport}${stopAndErrorImport}${llmImport}${integrationsImport}
-${legacyNames}
+${workflowNodeNames}
 const DateTime = {
   now: () => ({
     toString: () => new Date().toISOString(),

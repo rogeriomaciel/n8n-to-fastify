@@ -66,7 +66,7 @@ export function mapRawEditFields(ctx: NodeMapperContext): string {
   const stripBinary = options.stripBinary ?? true;
   const dotNotation = options.dotNotation ?? true;
   const legacyBinding = ctx.legacyNodePorts
-    ? 'const $node = createLegacyNodeReferences(ctx, legacyNodeNames, ' +
+    ? 'const $node = createLegacyNodeReferences(ctx, workflowNodeNames, ' +
       JSON.stringify(ctx.legacyNodePorts) + ', itemIndex);'
     : '';
   return [
