@@ -4,11 +4,12 @@ export async function runWithNodeRetry(
   run: () => Promise<N8nItem[]>,
   maxTries: number,
   delay: number,
+  retryOn: 'throw' | 'throwOrErrorOutput' = 'throwOrErrorOutput',
 ): Promise<N8nItem[]> {
   for (let attempt = 1; ; attempt++) {
     try {
       const items = await run();
-      if (attempt >= maxTries || items[0]?.json.error === undefined) return items;
+      if (retryOn === 'throw' || attempt >= maxTries || items[0]?.json.error === undefined) return items;
     } catch (error) {
       if (attempt >= maxTries) throw error;
     }

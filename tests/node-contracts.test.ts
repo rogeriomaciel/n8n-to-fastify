@@ -514,7 +514,7 @@ describe('Node I/O Contracts', () => {
     try {
       expect(res.exitCode).toBe(1);
       const err = res.stderr.toString();
-      expect(err).toContain('retryOnFail is only supported for HTTP Request and S3 Download nodes');
+      expect(err).toContain('retryOnFail is unsupported for this node configuration');
       expect(err).toContain('No Operation needs typeVersion 1');
     } finally {
       rmSync(dir, { recursive: true, force: true });

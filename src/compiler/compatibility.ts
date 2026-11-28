@@ -88,7 +88,7 @@ export function getCompatibilityIssues(workflow: ParsedWorkflow): string[] {
       report(node.name, 'legacy continueOnFail is ignored');
     }
     if (node.retryOnFail && !usesNodeRetry(node)) {
-      report(node.name, 'retryOnFail is only supported for HTTP Request and S3 Download nodes');
+      report(node.name, 'retryOnFail is unsupported for this node configuration');
     }
     const continueOnErrorActionTypes = [
       'n8n-nodes-base.postgres',
